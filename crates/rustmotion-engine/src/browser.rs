@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 
+use crate::tr;
 use crate::util::{hide_console, which};
 
 /// Cherche un exécutable Chromium installé.
@@ -79,7 +80,10 @@ impl Browser {
         let exe = match explicit.filter(|s| !s.trim().is_empty()) {
             Some(p) => PathBuf::from(p),
             None => find_browser().ok_or_else(|| {
-                anyhow!("aucun navigateur Chromium trouvé (installez Chrome ou Edge, ou définissez RUSTMOTION_BROWSER)")
+                anyhow!(tr!(
+                    "aucun navigateur Chromium trouvé (installez Chrome ou Edge, ou définissez RUSTMOTION_BROWSER)",
+                    "no Chromium browser found (install Chrome or Edge, or set RUSTMOTION_BROWSER)"
+                ))
             })?,
         };
         let profile_dir = std::env::temp_dir().join(format!(
@@ -119,7 +123,7 @@ impl Browser {
 
         let mut child = cmd
             .spawn()
-            .with_context(|| format!("impossible de lancer {}", exe.display()))?;
+            .with_context(|| tr!(format!("impossible de lancer {}", exe.display()), format!("cannot launch {}", exe.display())))?;
 
         // Chromium écrit « DevTools listening on ws://… » sur stderr.
         let stderr = child.stderr.take().unwrap();
@@ -142,10 +146,10 @@ impl Browser {
             Ok(u) => u,
             Err(_) => {
                 let _ = child.kill();
-                return Err(anyhow!(
-                    "le navigateur {} n'a pas exposé DevTools à temps",
-                    exe.display()
-                ));
+                return Err(anyhow!(tr!(
+                    format!("le navigateur {} n'a pas exposé DevTools à temps", exe.display()),
+                    format!("browser {} did not expose DevTools in time", exe.display())
+                )));
             }
         };
         Ok(Self { child, profile_dir, ws_url })

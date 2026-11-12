@@ -7,12 +7,14 @@
 pub mod browser;
 pub mod cdp;
 pub mod encoder;
+pub mod i18n;
 pub mod render;
 pub mod server;
 mod util;
 
 pub use browser::find_browser;
 pub use encoder::{ffmpeg_args, ffmpeg_version, find_ffmpeg};
+pub use i18n::{lang, set_lang, system_lang};
 pub use render::{probe, render, resolve_input, Outcome};
 pub use rustmotion_types as types;
 

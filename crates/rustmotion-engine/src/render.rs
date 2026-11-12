@@ -5,13 +5,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use rustmotion_types::{ProbeInfo, Progress, RenderSettings, Stage};
+use rustmotion_types::{DurationSource, ProbeInfo, Progress, RenderSettings, Stage};
 use serde_json::{json, Value};
 
 use crate::browser::Browser;
 use crate::cdp::{Cdp, Page};
 use crate::encoder::{find_ffmpeg, Encoder};
 use crate::server::StaticServer;
+use crate::tr;
 
 const SHIM: &str = include_str!("shim.js");
 
@@ -26,7 +27,7 @@ pub enum Outcome {
 pub fn resolve_input(input: &str) -> Result<(String, Option<StaticServer>)> {
     let input = input.trim().trim_matches('"').trim();
     if input.is_empty() {
-        bail!("aucune source indiquée");
+        bail!(tr!("aucune source indiquée", "no input given"));
     }
     let lower = input.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") {
@@ -42,14 +43,17 @@ pub fn resolve_input(input: &str) -> Result<(String, Option<StaticServer>)> {
     let path = PathBuf::from(&path_str);
     let path = path
         .canonicalize()
-        .with_context(|| format!("fichier introuvable : {path_str}"))?;
+        .with_context(|| tr!(format!("fichier introuvable : {path_str}"), format!("file not found: {path_str}")))?;
     let (root, file) = if path.is_dir() {
         if !path.join("index.html").is_file() {
-            bail!("le dossier ne contient pas d'index.html : {}", path.display());
+            bail!(tr!(
+                format!("le dossier ne contient pas d'index.html : {}", path.display()),
+                format!("the folder has no index.html: {}", path.display())
+            ));
         }
         (path.clone(), "index.html".to_string())
     } else {
-        let root = path.parent().ok_or_else(|| anyhow!("chemin invalide"))?.to_path_buf();
+        let root = path.parent().ok_or_else(|| anyhow!(tr!("chemin invalide", "invalid path")))?.to_path_buf();
         let file = path.file_name().unwrap().to_string_lossy().to_string();
         (root, file)
     };
@@ -83,7 +87,7 @@ pub struct OpenOptions<'a> {
 impl Session {
     pub fn open(o: OpenOptions<'_>, mut stage: impl FnMut(Stage)) -> Result<Self> {
         if o.width == 0 || o.height == 0 {
-            bail!("dimensions invalides");
+            bail!(tr!("dimensions invalides", "invalid dimensions"));
         }
         let (url, server) = resolve_input(o.input)?;
         stage(Stage::Launching);
@@ -114,10 +118,10 @@ impl Session {
         cdp.clear_events();
         let nav = page.call(&mut cdp, "Page.navigate", json!({ "url": url }))?;
         if let Some(err) = nav.get("errorText").and_then(Value::as_str) {
-            bail!("impossible de charger {url} : {err}");
+            bail!(tr!(format!("impossible de charger {url} : {err}"), format!("cannot load {url}: {err}")));
         }
         cdp.wait_event(Some(&page.session), "Page.loadEventFired", Duration::from_secs(90))
-            .context("chargement de la page")?;
+            .context(tr!("chargement de la page", "loading the page"))?;
         let _ = page.call(&mut cdp, "Animation.setPlaybackRate", json!({ "playbackRate": 0 }));
 
         // Polices et images prêtes.
@@ -143,7 +147,10 @@ impl Session {
         }
         let ok = page.eval(&mut cdp, "typeof window.__rm === 'object'")?;
         if ok != Value::Bool(true) {
-            bail!("l'horloge virtuelle n'a pas pu être injectée dans la page");
+            bail!(tr!(
+                "l'horloge virtuelle n'a pas pu être injectée dans la page",
+                "the virtual clock could not be injected into the page"
+            ));
         }
         page.eval(&mut cdp, "window.__rm.init(false)")?;
 
@@ -200,13 +207,13 @@ pub fn probe(input: &str, width: u32, height: u32, browser_path: Option<&str>) -
     };
     if let Some(d) = num(&meta["duration"]) {
         info.duration = Some(d);
-        info.duration_source = Some("déclarée par la page".into());
+        info.duration_source = Some(DurationSource::Page);
     } else if let Some(d) = num(&raw["gsapDuration"]) {
         info.duration = Some(d);
-        info.duration_source = Some("timeline GSAP".into());
+        info.duration_source = Some(DurationSource::Gsap);
     } else if let Some(ms) = num(&raw["maxEnd"]) {
         info.duration = Some((ms / 1000.0 * 100.0).round() / 100.0);
-        info.duration_source = Some("animations CSS / Web Animations".into());
+        info.duration_source = Some(DurationSource::Animations);
     }
 
     // Miniature au milieu de l'animation (ou à 1 s).
@@ -220,10 +227,10 @@ pub fn probe(input: &str, width: u32, height: u32, browser_path: Option<&str>) -
 pub fn render(s: &RenderSettings, cancel: &AtomicBool, mut on_progress: impl FnMut(Progress)) -> Result<Outcome> {
     validate(s)?;
     let ffmpeg = find_ffmpeg(s.ffmpeg_path.as_deref())
-        .ok_or_else(|| anyhow!("ffmpeg introuvable (installez-le ou indiquez son chemin)"))?;
+        .ok_or_else(|| anyhow!(tr!("ffmpeg introuvable (installez-le ou indiquez son chemin)", "ffmpeg not found (install it or set its path)")))?;
     let output = PathBuf::from(s.output.trim().trim_matches('"'));
     if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).with_context(|| format!("création de {}", dir.display()))?;
+        std::fs::create_dir_all(dir).with_context(|| tr!(format!("création de {}", dir.display()), format!("creating {}", dir.display())))?;
     }
 
     let total = s.total_frames();
@@ -269,8 +276,8 @@ pub fn render(s: &RenderSettings, cancel: &AtomicBool, mut on_progress: impl FnM
             return Ok(Outcome::Cancelled);
         }
         sess.seek(start_ms + i as f64 * frame_ms)
-            .with_context(|| format!("image {i}"))?;
-        let png = sess.capture_png().with_context(|| format!("capture de l'image {i}"))?;
+            .with_context(|| tr!(format!("image {i}"), format!("frame {i}")))?;
+        let png = sess.capture_png().with_context(|| tr!(format!("capture de l'image {i}"), format!("capturing frame {i}")))?;
         if let Err(e) = enc.push_b64(png) {
             let _ = std::fs::remove_file(&output);
             return Err(e);
@@ -303,30 +310,30 @@ pub fn render(s: &RenderSettings, cancel: &AtomicBool, mut on_progress: impl FnM
 
 fn validate(s: &RenderSettings) -> Result<()> {
     if s.output.trim().is_empty() {
-        bail!("aucun fichier de sortie indiqué");
+        bail!(tr!("aucun fichier de sortie indiqué", "no output file given"));
     }
     if s.width < 16 || s.height < 16 || s.width > 8192 || s.height > 8192 {
-        bail!("dimensions hors limites (16 – 8192 px)");
+        bail!(tr!("dimensions hors limites (16 – 8192 px)", "dimensions out of range (16 – 8192 px)"));
     }
     if !(0.25..=4.0).contains(&s.scale) {
-        bail!("facteur d'échelle hors limites (0.25 – 4)");
+        bail!(tr!("facteur d'échelle hors limites (0.25 – 4)", "scale factor out of range (0.25 – 4)"));
     }
     let (w, h) = s.output_size();
     if w > 8192 || h > 8192 {
-        bail!("résolution de sortie trop grande ({w}×{h})");
+        bail!(tr!(format!("résolution de sortie trop grande ({w}×{h})"), format!("output resolution too large ({w}×{h})")));
     }
     if s.fps == 0 || s.fps > 240 {
-        bail!("fps hors limites (1 – 240)");
+        bail!(tr!("fps hors limites (1 – 240)", "fps out of range (1 – 240)"));
     }
     if !(s.duration > 0.0 && s.duration <= 3600.0) {
-        bail!("durée hors limites (0 – 3600 s)");
+        bail!(tr!("durée hors limites (0 – 3600 s)", "duration out of range (0 – 3600 s)"));
     }
     if s.start < 0.0 {
-        bail!("le décalage de départ doit être positif");
+        bail!(tr!("le décalage de départ doit être positif", "the start offset must be positive"));
     }
     if let Some(a) = s.audio.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
         if !Path::new(a).is_file() {
-            bail!("fichier audio introuvable : {a}");
+            bail!(tr!(format!("fichier audio introuvable : {a}"), format!("audio file not found: {a}")));
         }
     }
     Ok(())

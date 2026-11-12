@@ -12,6 +12,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine as _;
 use rustmotion_types::{Codec, RenderSettings};
 
+use crate::tr;
 use crate::util::{hide_console, which};
 
 /// Cherche ffmpeg : chemin explicite, variable d'env, à côté de l'exécutable, PATH.
@@ -135,7 +136,7 @@ impl Encoder {
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
         hide_console(&mut cmd);
-        let mut child = cmd.spawn().with_context(|| format!("lancement de {}", ffmpeg.display()))?;
+        let mut child = cmd.spawn().with_context(|| tr!(format!("lancement de {}", ffmpeg.display()), format!("launching {}", ffmpeg.display())))?;
 
         let log = Arc::new(Mutex::new(VecDeque::new()));
         let stderr = child.stderr.take().unwrap();
@@ -169,11 +170,11 @@ impl Encoder {
 
     /// Envoie une image PNG encodée en base64.
     pub fn push_b64(&mut self, png_b64: String) -> Result<()> {
-        let tx = self.tx.as_ref().ok_or_else(|| anyhow!("encodeur fermé"))?;
+        let tx = self.tx.as_ref().ok_or_else(|| anyhow!(tr!("encodeur fermé", "encoder closed")))?;
         if tx.send(png_b64).is_err() {
             // Le thread d'écriture est mort : ffmpeg a probablement échoué.
             let err = self.finish_inner().err();
-            bail!("{}", err.map(|e| e.to_string()).unwrap_or_else(|| "ffmpeg s'est arrêté".into()));
+            bail!("{}", err.map(|e| e.to_string()).unwrap_or_else(|| tr!("ffmpeg s'est arrêté", "ffmpeg stopped").into()));
         }
         Ok(())
     }
@@ -191,10 +192,11 @@ impl Encoder {
         }
         if !status.success() {
             let log = self.log_text();
-            bail!("ffmpeg a échoué ({status}) :\n{}", if log.is_empty() { "(aucun message)".into() } else { log });
+            let log = if log.is_empty() { tr!("(aucun message)", "(no output)").to_string() } else { log };
+            bail!(tr!(format!("ffmpeg a échoué ({status}) :\n{log}"), format!("ffmpeg failed ({status}):\n{log}")));
         }
         if let Some(Ok(Err(e))) = write_res {
-            bail!("écriture vers ffmpeg : {e}");
+            bail!(tr!(format!("écriture vers ffmpeg : {e}"), format!("writing to ffmpeg: {e}")));
         }
         Ok(())
     }

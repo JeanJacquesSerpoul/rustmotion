@@ -121,6 +121,19 @@
     }
   };
 
+  // Avance l'horloge à `t` : timers échus, puis une image requestAnimationFrame.
+  const MAX_STEP = 50;
+  const tick = async (t) => {
+    runTimersUntil(t);
+    now = t;
+    const cbs = rafCbs;
+    rafCbs = new Map();
+    for (const cb of cbs.values()) {
+      try { cb(now); } catch (e) { console.error(e); }
+    }
+    await Promise.resolve();
+  };
+
   let lastT = -1;
   W.__rm = {
     version: 1,
@@ -139,16 +152,12 @@
       return { freezeByPause };
     },
     async seek(t) {
-      if (t < lastT) throw new Error('RustMotion : le temps ne peut pas reculer');
+      if (t < lastT) throw new Error('RustMotion: time cannot go backwards');
       lastT = t;
-      runTimersUntil(t);
-      now = t;
-      const cbs = rafCbs;
-      rafCbs = new Map();
-      for (const cb of cbs.values()) {
-        try { cb(now); } catch (e) { console.error(e); }
-      }
-      await Promise.resolve();
+      // Grand saut (miniature, décalage de départ) : on avance par petits pas, sinon les
+      // bibliothèques qui lissent les à-coups (lagSmoothing de GSAP…) ne suivraient pas.
+      while (t - now > MAX_STEP) await tick(now + MAX_STEP);
+      await tick(t);
       syncAnimations(t);
       await syncMedia(t);
       if (W.__rmWaitPaint !== false) await nextPaint();

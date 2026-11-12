@@ -1,5 +1,7 @@
 # RustMotion
 
+**Français** · [English](README.en.md)
+
 Convertisseur d'animations **HTML / CSS / JS → vidéo** (MP4, MOV, WebM), en Rust + Tauri v2 + Leptos.
 
 Chaque image est calculée à un instant précis grâce à une **horloge virtuelle** : le résultat est fluide et
@@ -18,7 +20,9 @@ identique d'un rendu à l'autre, même si la page est lourde ou la machine lente
 - Qualité réglable (CRF), conversion couleur BT.709 correcte, piste audio optionnelle.
 - Progression en direct (vitesse, temps restant, aperçu), annulation propre.
 - Glisser-déposer d'une page HTML (ou d'un fichier audio) sur la fenêtre.
-- Une CLI (`rustmotion-cli`) pour les scripts et l'intégration continue.
+- **Bilingue français / anglais** : interface, dialogues et messages d'erreur. La langue suit celle du système
+  au premier lancement, puis le choix fait dans l'en-tête est mémorisé.
+- Une CLI (`rustmotion-cli`) pour les scripts et l'intégration continue, elle aussi bilingue (`--lang fr|en`).
 
 ## Prérequis
 
@@ -61,7 +65,7 @@ rustmotion-cli <entrée> [options]
   -r, --fps <n>            -d, --duration <s> --start <s>
   -c, --codec h264|h265|prores4444|vp9      --crf <n>   --transparent
   --audio <fichier>        --wait <ms>        --browser <chemin>   --ffmpeg <chemin>
-  --probe                  --tools            --help
+  --lang fr|en             --probe            --tools              --help
 ```
 
 Exemple : incrustation transparente en ProRes 4444
@@ -101,9 +105,9 @@ page HTML ──► serveur HTTP local ──► Chromium headless (CDP)
 | Dossier | Contenu |
 |---|---|
 | `crates/rustmotion-types` | types partagés (natif + wasm) : réglages, progression, analyse |
-| `crates/rustmotion-engine` | moteur : client CDP minimal, lancement du navigateur, serveur statique, horloge virtuelle (`shim.js`), encodeur ffmpeg, CLI |
+| `crates/rustmotion-engine` | moteur : client CDP minimal, lancement du navigateur, serveur statique, horloge virtuelle (`shim.js`), encodeur ffmpeg, messages FR/EN (`i18n.rs`, macro `tr!`), CLI |
 | `src-tauri` | application Tauri v2 : commandes `probe`, `render`, `cancel_render`, dialogues de fichiers |
-| `src` | interface Leptos 0.8 (CSR, compilée par Trunk) |
+| `src` | interface Leptos 0.8 (CSR, compilée par Trunk), textes FR/EN dans `i18n.rs` |
 | `examples` | pages de démonstration |
 
 ## Limites connues

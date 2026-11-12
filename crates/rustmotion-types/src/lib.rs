@@ -2,6 +2,43 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Langue de l'interface et des messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Lang {
+    #[default]
+    Fr,
+    En,
+}
+
+impl Lang {
+    pub const ALL: [Lang; 2] = [Lang::Fr, Lang::En];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Lang::Fr => "fr",
+            Lang::En => "en",
+        }
+    }
+
+    /// Interprète un code de langue (« fr », « fr-FR », « en_US »…). Tout ce qui n'est pas du français donne l'anglais.
+    pub fn from_code(s: &str) -> Lang {
+        if s.trim().to_ascii_lowercase().starts_with("fr") {
+            Lang::Fr
+        } else {
+            Lang::En
+        }
+    }
+
+    /// Choisit le texte dans la langue courante.
+    pub fn pick<T>(self, fr: T, en: T) -> T {
+        match self {
+            Lang::Fr => fr,
+            Lang::En => en,
+        }
+    }
+}
+
 /// Codec / conteneur de sortie.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +85,15 @@ impl Codec {
 
     pub fn from_id(s: &str) -> Option<Codec> {
         Codec::ALL.into_iter().find(|c| c.id().eq_ignore_ascii_case(s))
+    }
+
+    pub fn description(self, lang: Lang) -> &'static str {
+        match self {
+            Codec::H264 => lang.pick("Compatible partout", "Plays everywhere"),
+            Codec::H265 => lang.pick("Plus léger, moderne", "Smaller, modern"),
+            Codec::ProRes4444 => lang.pick("Master · alpha", "Master · alpha"),
+            Codec::Vp9 => lang.pick("Web · alpha", "Web · alpha"),
+        }
     }
 
     /// Le codec peut-il conserver un canal alpha ?
@@ -140,14 +186,36 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub fn label(self) -> &'static str {
+    pub fn label(self, lang: Lang) -> &'static str {
         match self {
-            Stage::Launching => "Lancement du navigateur…",
-            Stage::Loading => "Chargement de la page…",
-            Stage::Capturing => "Capture des images",
-            Stage::Finalizing => "Finalisation de l'encodage…",
-            Stage::Done => "Terminé",
-            Stage::Cancelled => "Annulé",
+            Stage::Launching => lang.pick("Lancement du navigateur…", "Launching browser…"),
+            Stage::Loading => lang.pick("Chargement de la page…", "Loading page…"),
+            Stage::Capturing => lang.pick("Capture des images", "Capturing frames"),
+            Stage::Finalizing => lang.pick("Finalisation de l'encodage…", "Finishing encoding…"),
+            Stage::Done => lang.pick("Terminé", "Done"),
+            Stage::Cancelled => lang.pick("Annulé", "Cancelled"),
+        }
+    }
+}
+
+/// Origine de la durée détectée.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurationSource {
+    /// `<meta name="rustmotion:duration">` ou `window.RUSTMOTION.duration`.
+    Page,
+    /// Timeline globale GSAP.
+    Gsap,
+    /// Fin de la dernière animation CSS / Web Animations finie.
+    Animations,
+}
+
+impl DurationSource {
+    pub fn label(self, lang: Lang) -> &'static str {
+        match self {
+            DurationSource::Page => lang.pick("déclarée par la page", "declared by the page"),
+            DurationSource::Gsap => lang.pick("timeline GSAP", "GSAP timeline"),
+            DurationSource::Animations => lang.pick("animations CSS / Web Animations", "CSS / Web Animations"),
         }
     }
 }
@@ -173,7 +241,7 @@ pub struct ProbeInfo {
     /// Durée détectée (s) : meta, GSAP ou animations CSS/WAAPI finies.
     pub duration: Option<f64>,
     /// D'où vient la durée détectée.
-    pub duration_source: Option<String>,
+    pub duration_source: Option<DurationSource>,
     /// Au moins une animation infinie a été trouvée.
     pub infinite: bool,
     /// Nombre d'animations CSS / Web Animations trouvées.

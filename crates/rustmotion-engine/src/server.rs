@@ -10,6 +10,8 @@ use anyhow::{anyhow, Result};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, CONTROLS};
 use tiny_http::{Header, Response, Server};
 
+use crate::tr;
+
 pub struct StaticServer {
     server: Arc<Server>,
     handle: Option<JoinHandle<()>>,
@@ -31,12 +33,12 @@ const PATH_SET: &AsciiSet = &CONTROLS
 impl StaticServer {
     pub fn start(root: &Path) -> Result<Self> {
         let root = root.canonicalize()?;
-        let server = Arc::new(Server::http("127.0.0.1:0").map_err(|e| anyhow!("serveur local : {e}"))?);
+        let server = Arc::new(Server::http("127.0.0.1:0").map_err(|e| anyhow!(tr!(format!("serveur local : {e}"), format!("local server: {e}"))))?);
         let port = server
             .server_addr()
             .to_ip()
             .map(|a| a.port())
-            .ok_or_else(|| anyhow!("adresse du serveur local inconnue"))?;
+            .ok_or_else(|| anyhow!(tr!("adresse du serveur local inconnue", "unknown local server address")))?;
         let srv = server.clone();
         let handle = std::thread::spawn(move || {
             for req in srv.incoming_requests() {

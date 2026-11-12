@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rustmotion_engine::Outcome;
-use rustmotion_types::{Codec, ProbeInfo, RenderSettings, ToolStatus};
+use rustmotion_engine::{tr, Outcome};
+use rustmotion_types::{Codec, Lang, ProbeInfo, RenderSettings, ToolStatus};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
@@ -19,7 +19,13 @@ struct AppState {
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(f)
         .await
-        .map_err(|e| format!("tâche interrompue : {e}"))?
+        .map_err(|e| tr!(format!("tâche interrompue : {e}"), format!("task aborted: {e}")))?
+}
+
+/// Aligne la langue des messages du moteur et des dialogues sur celle de l'interface.
+#[tauri::command]
+fn set_lang(lang: Lang) {
+    rustmotion_engine::set_lang(lang);
 }
 
 #[tauri::command]
@@ -31,11 +37,15 @@ async fn tool_status(browser: Option<String>, ffmpeg: Option<String>) -> Result<
 async fn pick_file(app: AppHandle, kind: String) -> Result<Option<String>, String> {
     let d = app.dialog().file();
     let d = match kind.as_str() {
-        "html" => d.set_title("Choisir une animation HTML").add_filter("Pages HTML", &["html", "htm"]),
+        "html" => d
+            .set_title(tr!("Choisir une animation HTML", "Choose an HTML animation"))
+            .add_filter(tr!("Pages HTML", "HTML pages"), &["html", "htm"]),
         "audio" => d
-            .set_title("Choisir une piste audio")
+            .set_title(tr!("Choisir une piste audio", "Choose an audio track"))
             .add_filter("Audio", &["mp3", "wav", "aac", "m4a", "ogg", "flac", "opus"]),
-        "exe" => d.set_title("Choisir un exécutable").add_filter("Exécutable", &["exe", ""]),
+        "exe" => d
+            .set_title(tr!("Choisir un exécutable", "Choose an executable"))
+            .add_filter(tr!("Exécutable", "Executable"), &["exe", ""]),
         _ => d,
     };
     let picked = blocking(move || Ok(d.blocking_pick_file())).await?;
@@ -44,7 +54,7 @@ async fn pick_file(app: AppHandle, kind: String) -> Result<Option<String>, Strin
 
 #[tauri::command]
 async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
-    let d = app.dialog().file().set_title("Choisir un dossier contenant index.html");
+    let d = app.dialog().file().set_title(tr!("Choisir un dossier contenant index.html", "Choose a folder containing index.html"));
     let picked = blocking(move || Ok(d.blocking_pick_folder())).await?;
     Ok(picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string()))
 }
@@ -55,7 +65,7 @@ async fn pick_output(app: AppHandle, codec: Codec, current: Option<String>) -> R
     let mut d = app
         .dialog()
         .file()
-        .set_title("Enregistrer la vidéo")
+        .set_title(tr!("Enregistrer la vidéo", "Save the video"))
         .add_filter(codec.label(), &[ext]);
     if let Some(cur) = current.filter(|c| !c.trim().is_empty()) {
         let p = PathBuf::from(cur);
@@ -118,7 +128,7 @@ async fn probe(input: String, width: u32, height: u32, browser: Option<String>) 
 #[tauri::command]
 async fn render(app: AppHandle, state: State<'_, AppState>, settings: RenderSettings) -> Result<Option<String>, String> {
     if state.busy.swap(true, Ordering::SeqCst) {
-        return Err("un rendu est déjà en cours".into());
+        return Err(tr!("un rendu est déjà en cours", "a render is already running").into());
     }
     state.cancel.store(false, Ordering::SeqCst);
     let cancel = state.cancel.clone();
@@ -160,6 +170,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
+            set_lang,
             tool_status,
             pick_file,
             pick_folder,
@@ -178,5 +189,5 @@ pub fn run() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("erreur au démarrage de RustMotion");
+        .expect("error while starting RustMotion");
 }

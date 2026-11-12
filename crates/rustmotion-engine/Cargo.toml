@@ -21,3 +21,4 @@ base64 = "0.22"
 tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 tiny_http = "0.12"
 percent-encoding = "2"
+sys-locale = "0.3"

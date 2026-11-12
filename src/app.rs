@@ -1,8 +1,9 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use rustmotion_types::{Codec, ProbeInfo, Progress, RenderSettings, Stage, ToolStatus};
+use rustmotion_types::{Codec, Lang, ProbeInfo, Progress, RenderSettings, Stage, ToolStatus};
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::{self, texts};
 use crate::tauri::{self, invoke};
 
 #[derive(Clone, PartialEq)]
@@ -42,17 +43,6 @@ fn fmt_ms(ms: u64) -> String {
     }
 }
 
-fn crf_label(crf: u8) -> &'static str {
-    match crf {
-        0 => "sans perte",
-        1..=14 => "quasi sans perte",
-        15..=20 => "très haute",
-        21..=26 => "haute",
-        27..=32 => "moyenne",
-        _ => "basse",
-    }
-}
-
 fn file_name(p: &str) -> String {
     p.rsplit(['/', '\\']).next().unwrap_or(p).to_string()
 }
@@ -70,9 +60,44 @@ fn opt(s: String) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+fn parse_f64(s: String) -> Result<f64, std::num::ParseFloatError> {
+    s.trim().replace(',', ".").parse()
+}
+
+fn browser_name(path: Option<&str>, lang: Lang) -> &'static str {
+    let Some(p) = path else { return texts(lang).browser_missing };
+    let p = p.to_ascii_lowercase();
+    if p.contains("msedge") || p.contains("edge") {
+        "Edge"
+    } else if p.contains("brave") {
+        "Brave"
+    } else if p.contains("chromium") {
+        "Chromium"
+    } else {
+        "Chrome"
+    }
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let in_tauri = tauri::available();
+
+    // --- Langue -------------------------------------------------------------
+    let lang = RwSignal::new(i18n::initial_lang());
+    let t = move || texts(lang.get());
+    Effect::new(move |_| {
+        let l = lang.get();
+        i18n::remember_lang(l);
+        if in_tauri {
+            #[derive(Serialize)]
+            struct A {
+                lang: Lang,
+            }
+            spawn_local(async move {
+                let _ = invoke::<_, ()>("set_lang", &A { lang: l }).await;
+            });
+        }
+    });
 
     // --- État ---------------------------------------------------------------
     let tools = RwSignal::new(None::<ToolStatus>);
@@ -347,21 +372,31 @@ pub fn App() -> impl IntoView {
                     <div class="logo"><span></span></div>
                     <div>
                         <h1>"RustMotion"</h1>
-                        <p>"Animation HTML → vidéo, image par image"</p>
+                        <p>{move || t().tagline}</p>
                     </div>
                 </div>
                 <div class="tools">
-                    {move || match tools.get() {
-                        None => view! { <span class="badge muted">{if in_tauri { "Détection des outils…" } else { "Hors Tauri" }}</span> }.into_any(),
-                        Some(t) => view! {
-                            <span class="badge" class:ok=t.browser.is_some() title=t.browser.clone().unwrap_or_default()>
-                                <i></i>{browser_name(t.browser.as_deref())}
-                            </span>
-                            <span class="badge" class:ok=t.ffmpeg.is_some()
-                                title=format!("{}\n{}", t.ffmpeg.clone().unwrap_or_default(), t.ffmpeg_version.clone().unwrap_or_default())>
-                                <i></i>{if t.ffmpeg.is_some() { "ffmpeg" } else { "ffmpeg introuvable" }}
-                            </span>
-                        }.into_any(),
+                    <div class="lang" role="group" title=move || t().lang_title>
+                        {Lang::ALL.into_iter().map(|l| view! {
+                            <button class:active=move || lang.get() == l on:click=move |_| lang.set(l)>
+                                {l.code().to_uppercase()}
+                            </button>
+                        }).collect_view()}
+                    </div>
+                    {move || {
+                        let tx = t();
+                        match tools.get() {
+                            None => view! { <span class="badge muted">{if in_tauri { tx.detecting_tools } else { tx.outside_tauri }}</span> }.into_any(),
+                            Some(tl) => view! {
+                                <span class="badge" class:ok=tl.browser.is_some() title=tl.browser.clone().unwrap_or_default()>
+                                    <i></i>{browser_name(tl.browser.as_deref(), lang.get())}
+                                </span>
+                                <span class="badge" class:ok=tl.ffmpeg.is_some()
+                                    title=format!("{}\n{}", tl.ffmpeg.clone().unwrap_or_default(), tl.ffmpeg_version.clone().unwrap_or_default())>
+                                    <i></i>{if tl.ffmpeg.is_some() { "ffmpeg" } else { tx.ffmpeg_missing }}
+                                </span>
+                            }.into_any(),
+                        }
                     }}
                 </div>
             </header>
@@ -370,13 +405,13 @@ pub fn App() -> impl IntoView {
                 <section class="col settings">
                     // ---------------- Source
                     <div class="card">
-                        <div class="card-h"><span class="step">"1"</span><h2>"Source"</h2></div>
+                        <div class="card-h"><span class="step">"1"</span><h2>{move || t().source}</h2></div>
                         <div class="drop" class:filled=move || !input.get().is_empty()>
                             {move || if input.get().is_empty() {
                                 view! {
                                     <div class="drop-empty">
-                                        <strong>"Déposez un fichier .html ici"</strong>
-                                        <span>"ou un dossier contenant index.html, ou collez une URL"</span>
+                                        <strong>{t().drop_title}</strong>
+                                        <span>{t().drop_sub}</span>
                                     </div>
                                 }.into_any()
                             } else {
@@ -389,42 +424,44 @@ pub fn App() -> impl IntoView {
                             }}
                         </div>
                         <div class="row">
-                            <input class="grow" type="text" placeholder="Chemin ou https://…"
+                            <input class="grow" type="text" placeholder=move || t().path_placeholder
                                 prop:value=move || input.get()
                                 on:change=move |ev| set_input(event_target_value(&ev)) />
-                            <button class="btn" on:click=move |_| pick("html", input, true) disabled=rendering>"Fichier…"</button>
-                            <button class="btn" on:click=move |_| pick_folder() disabled=rendering>"Dossier…"</button>
+                            <button class="btn" on:click=move |_| pick("html", input, true) disabled=rendering>{move || t().btn_file}</button>
+                            <button class="btn" on:click=move |_| pick_folder() disabled=rendering>{move || t().btn_folder}</button>
                         </div>
                         <div class="probe">
                             {move || {
+                                let l = lang.get();
+                                let tx = texts(l);
                                 if probing.get() {
-                                    return view! { <span class="chip"><span class="spin"></span>"Analyse de la page…"</span> }.into_any();
+                                    return view! { <span class="chip"><span class="spin"></span>{tx.analysing}</span> }.into_any();
                                 }
                                 if let Some(e) = probe_error.get() {
                                     return view! { <span class="chip err">{e}</span> }.into_any();
                                 }
                                 match probe_info.get() {
-                                    None => view! { <span class="hint">"La page est analysée automatiquement pour détecter sa durée."</span> }.into_any(),
+                                    None => view! { <span class="hint">{tx.probe_hint}</span> }.into_any(),
                                     Some(i) => view! {
                                         {(!i.title.is_empty()).then(|| view! { <span class="chip strong">{i.title.clone()}</span> })}
-                                        <span class="chip">{format!("{} animation{}", i.animations, if i.animations > 1 { "s" } else { "" })}</span>
+                                        <span class="chip">{i18n::animations(l, i.animations)}</span>
                                         {i.gsap.then(|| view! { <span class="chip">"GSAP"</span> })}
-                                        {match (i.duration, i.duration_source.clone()) {
-                                            (Some(d), Some(src)) => view! { <span class="chip ok">{format!("{d:.2} s · {src}")}</span> }.into_any(),
-                                            _ => view! { <span class="chip warn">"Durée non détectée"</span> }.into_any(),
+                                        {match (i.duration, i.duration_source) {
+                                            (Some(d), Some(src)) => view! { <span class="chip ok">{format!("{d:.2} s · {}", src.label(l))}</span> }.into_any(),
+                                            _ => view! { <span class="chip warn">{tx.duration_unknown}</span> }.into_any(),
                                         }}
-                                        {i.infinite.then(|| view! { <span class="chip warn">"Animation infinie : fixez la durée"</span> })}
+                                        {i.infinite.then(|| view! { <span class="chip warn">{tx.infinite_hint}</span> })}
                                     }.into_any(),
                                 }
                             }}
-                            <button class="link" on:click=move |_| run_probe() disabled=move || input.get().is_empty() || probing.get() || rendering()>"Ré-analyser"</button>
+                            <button class="link" on:click=move |_| run_probe() disabled=move || input.get().is_empty() || probing.get() || rendering()>{move || t().reanalyse}</button>
                         </div>
                     </div>
 
                     // ---------------- Format
                     <div class="card">
-                        <div class="card-h"><span class="step">"2"</span><h2>"Format"</h2></div>
-                        <label class="lbl">"Préréglages"</label>
+                        <div class="card-h"><span class="step">"2"</span><h2>{move || t().format}</h2></div>
+                        <label class="lbl">{move || t().presets}</label>
                         <div class="seg">
                             {PRESETS.into_iter().map(|(name, w, h)| view! {
                                 <button class="pill" class:active=move || width.get() == w && height.get() == h
@@ -435,29 +472,29 @@ pub fn App() -> impl IntoView {
                         </div>
                         <div class="fields">
                             <div class="field">
-                                <label class="lbl">"Largeur"</label>
+                                <label class="lbl">{move || t().width}</label>
                                 <input type="number" min="16" max="8192" prop:value=move || width.get()
                                     on:change=move |ev| if let Ok(v) = event_target_value(&ev).parse() { width.set(v) } />
                             </div>
                             <div class="field">
-                                <label class="lbl">"Hauteur"</label>
+                                <label class="lbl">{move || t().height}</label>
                                 <input type="number" min="16" max="8192" prop:value=move || height.get()
                                     on:change=move |ev| if let Ok(v) = event_target_value(&ev).parse() { height.set(v) } />
                             </div>
                             <div class="field">
-                                <label class="lbl">"Durée (s)"</label>
+                                <label class="lbl">{move || t().duration_s}</label>
                                 <input type="number" min="0.1" step="0.1" prop:value=move || duration.get()
                                     on:change=move |ev| if let Ok(v) = parse_f64(event_target_value(&ev)) { if v > 0.0 { duration.set(v) } } />
                             </div>
                             <div class="field">
-                                <label class="lbl">"Départ (s)"</label>
+                                <label class="lbl">{move || t().start_s}</label>
                                 <input type="number" min="0" step="0.1" prop:value=move || start.get()
                                     on:change=move |ev| if let Ok(v) = parse_f64(event_target_value(&ev)) { start.set(v.max(0.0)) } />
                             </div>
                         </div>
                         <div class="fields two">
                             <div class="field">
-                                <label class="lbl">"Images / seconde"</label>
+                                <label class="lbl">{move || t().fps_label}</label>
                                 <div class="seg tight">
                                     {FPS.into_iter().map(|f| view! {
                                         <button class="pill" class:active=move || fps.get() == f on:click=move |_| fps.set(f)>{f}</button>
@@ -465,7 +502,7 @@ pub fn App() -> impl IntoView {
                                 </div>
                             </div>
                             <div class="field">
-                                <label class="lbl">"Netteté (devicePixelRatio)"</label>
+                                <label class="lbl">{move || t().sharpness}</label>
                                 <div class="seg tight">
                                     {SCALES.into_iter().map(|s| view! {
                                         <button class="pill" class:active=move || (scale.get() - s).abs() < 1e-6 on:click=move |_| scale.set(s)>{format!("{s}×")}</button>
@@ -477,23 +514,18 @@ pub fn App() -> impl IntoView {
 
                     // ---------------- Export
                     <div class="card">
-                        <div class="card-h"><span class="step">"3"</span><h2>"Export"</h2></div>
+                        <div class="card-h"><span class="step">"3"</span><h2>{move || t().export}</h2></div>
                         <div class="codecs">
                             {Codec::ALL.into_iter().map(|c| view! {
                                 <button class="codec" class:active=move || codec.get() == c on:click=move |_| set_codec(c)>
                                     <b>{c.label()}</b>
-                                    <small>{match c {
-                                        Codec::H264 => "Compatible partout",
-                                        Codec::H265 => "Plus léger, moderne",
-                                        Codec::ProRes4444 => "Master · alpha",
-                                        Codec::Vp9 => "Web · alpha",
-                                    }}</small>
+                                    <small>{move || c.description(lang.get())}</small>
                                 </button>
                             }).collect_view()}
                         </div>
                         <Show when=move || codec.get().uses_crf()>
                             <div class="field">
-                                <label class="lbl">"Qualité "<em>{move || format!("CRF {} · {}", crf.get(), crf_label(crf.get()))}</em></label>
+                                <label class="lbl">{move || t().quality}" "<em>{move || format!("CRF {} · {}", crf.get(), i18n::crf_label(lang.get(), crf.get()))}</em></label>
                                 <input type="range" min="0" max="40" prop:value=move || crf.get()
                                     on:input=move |ev| if let Ok(v) = event_target_value(&ev).parse() { crf.set(v) } />
                             </div>
@@ -503,39 +535,39 @@ pub fn App() -> impl IntoView {
                                 disabled=move || !codec.get().supports_alpha()
                                 on:change=move |ev| transparent.set(event_target_checked(&ev)) />
                             <span class="sw"></span>
-                            <span>"Fond transparent"<small>" (la page doit avoir un fond transparent — ProRes 4444 / VP9)"</small></span>
+                            <span>{move || t().transparent}<small>{move || t().transparent_hint}</small></span>
                         </label>
                         <div class="field">
-                            <label class="lbl">"Piste audio (optionnelle)"</label>
+                            <label class="lbl">{move || t().audio_label}</label>
                             <div class="row">
-                                <input class="grow" type="text" placeholder="Aucune" prop:value=move || audio.get()
+                                <input class="grow" type="text" placeholder=move || t().audio_none prop:value=move || audio.get()
                                     on:change=move |ev| audio.set(event_target_value(&ev)) />
-                                <button class="btn" on:click=move |_| pick("audio", audio, false)>"Choisir…"</button>
+                                <button class="btn" on:click=move |_| pick("audio", audio, false)>{move || t().btn_choose}</button>
                                 <Show when=move || !audio.get().is_empty()>
                                     <button class="btn ghost" on:click=move |_| audio.set(String::new())>"✕"</button>
                                 </Show>
                             </div>
                         </div>
                         <div class="field">
-                            <label class="lbl">"Fichier de sortie"</label>
+                            <label class="lbl">{move || t().output_label}</label>
                             <div class="row">
                                 <input class="grow" type="text" prop:value=move || output.get()
                                     on:change=move |ev| { output.set(event_target_value(&ev)); output_touched.set(true); } />
-                                <button class="btn" on:click=move |_| pick_output()>"Enregistrer sous…"</button>
+                                <button class="btn" on:click=move |_| pick_output()>{move || t().btn_save_as}</button>
                             </div>
                         </div>
                         <button class="link" on:click=move |_| show_advanced.update(|v| *v = !*v)>
-                            {move || if show_advanced.get() { "▾ Options avancées" } else { "▸ Options avancées" }}
+                            {move || if show_advanced.get() { t().advanced_hide } else { t().advanced_show }}
                         </button>
                         <Show when=move || show_advanced.get()>
                             <div class="advanced">
                                 <div class="field">
-                                    <label class="lbl">"Attente après chargement (ms, temps réel)"</label>
+                                    <label class="lbl">{move || t().wait_label}</label>
                                     <input type="number" min="0" step="50" prop:value=move || wait_ms.get()
                                         on:change=move |ev| if let Ok(v) = event_target_value(&ev).parse() { wait_ms.set(v) } />
                                 </div>
                                 <div class="field">
-                                    <label class="lbl">"Navigateur Chromium (vide = auto)"</label>
+                                    <label class="lbl">{move || t().browser_label}</label>
                                     <div class="row">
                                         <input class="grow" type="text" prop:value=move || browser_path.get()
                                             on:change=move |ev| { browser_path.set(event_target_value(&ev)); refresh_tools(); } />
@@ -543,7 +575,7 @@ pub fn App() -> impl IntoView {
                                     </div>
                                 </div>
                                 <div class="field">
-                                    <label class="lbl">"ffmpeg (vide = auto)"</label>
+                                    <label class="lbl">{move || t().ffmpeg_label}</label>
                                     <div class="row">
                                         <input class="grow" type="text" prop:value=move || ffmpeg_path.get()
                                             on:change=move |ev| { ffmpeg_path.set(event_target_value(&ev)); refresh_tools(); } />
@@ -560,21 +592,23 @@ pub fn App() -> impl IntoView {
                     <div class="card preview-card">
                         <div class="viewport" style=move || format!("aspect-ratio: {} / {}", width.get().max(1), height.get().max(1))>
                             {move || match preview.get() {
-                                Some(src) => view! { <img src=src alt="Aperçu" /> }.into_any(),
-                                None => view! { <div class="vp-empty">"Aperçu"</div> }.into_any(),
+                                Some(src) => view! { <img src=src alt=t().preview_alt /> }.into_any(),
+                                None => view! { <div class="vp-empty">{t().preview}</div> }.into_any(),
                             }}
                             <span class="vp-tag">{move || { let (w, h) = out_size(); format!("{w}×{h}") }}</span>
                         </div>
                         <dl class="summary">
-                            <div><dt>"Images"</dt><dd>{total_frames}</dd></div>
-                            <div><dt>"Cadence"</dt><dd>{move || format!("{} fps", fps.get())}</dd></div>
-                            <div><dt>"Durée"</dt><dd>{move || format!("{:.2} s", duration.get())}</dd></div>
-                            <div><dt>"Format"</dt><dd>{move || codec.get().extension().to_uppercase()}</dd></div>
+                            <div><dt>{move || t().frames}</dt><dd>{total_frames}</dd></div>
+                            <div><dt>{move || t().rate}</dt><dd>{move || format!("{} fps", fps.get())}</dd></div>
+                            <div><dt>{move || t().duration}</dt><dd>{move || format!("{:.2} s", duration.get())}</dd></div>
+                            <div><dt>{move || t().format_short}</dt><dd>{move || codec.get().extension().to_uppercase()}</dd></div>
                         </dl>
                     </div>
 
                     <div class="card render-card">
                         {move || {
+                            let l = lang.get();
+                            let tx = texts(l);
                             let p = progress.get();
                             match phase.get() {
                                 Phase::Rendering => {
@@ -583,17 +617,17 @@ pub fn App() -> impl IntoView {
                                     let stage = p.as_ref().map(|p| p.stage).unwrap_or(Stage::Launching);
                                     view! {
                                         <div class="prog-h">
-                                            <strong>{stage.label()}</strong>
+                                            <strong>{stage.label(l)}</strong>
                                             <span>{format!("{pct:.0} %")}</span>
                                         </div>
                                         <div class="bar"><div class="fill" class:indet=stage != Stage::Capturing style=format!("width:{pct:.2}%")></div></div>
                                         <dl class="stats">
-                                            <div><dt>"Image"</dt><dd>{format!("{frame} / {total}")}</dd></div>
-                                            <div><dt>"Vitesse"</dt><dd>{p.as_ref().map(|p| format!("{:.1} img/s", p.render_fps)).unwrap_or("—".into())}</dd></div>
-                                            <div><dt>"Écoulé"</dt><dd>{p.as_ref().map(|p| fmt_ms(p.elapsed_ms)).unwrap_or("—".into())}</dd></div>
-                                            <div><dt>"Restant"</dt><dd>{p.as_ref().and_then(|p| p.eta_ms).map(fmt_ms).unwrap_or("—".into())}</dd></div>
+                                            <div><dt>{tx.frame}</dt><dd>{format!("{frame} / {total}")}</dd></div>
+                                            <div><dt>{tx.speed}</dt><dd>{p.as_ref().map(|p| format!("{:.1} {}", p.render_fps, tx.speed_unit)).unwrap_or("—".into())}</dd></div>
+                                            <div><dt>{tx.elapsed}</dt><dd>{p.as_ref().map(|p| fmt_ms(p.elapsed_ms)).unwrap_or("—".into())}</dd></div>
+                                            <div><dt>{tx.remaining}</dt><dd>{p.as_ref().and_then(|p| p.eta_ms).map(fmt_ms).unwrap_or("—".into())}</dd></div>
                                         </dl>
-                                        <button class="btn danger wide" on:click=move |_| cancel()>"Annuler"</button>
+                                        <button class="btn danger wide" on:click=move |_| cancel()>{tx.cancel}</button>
                                     }.into_any()
                                 }
                                 Phase::Done(path) => {
@@ -601,30 +635,31 @@ pub fn App() -> impl IntoView {
                                     let p2 = path.clone();
                                     view! {
                                         <div class="result ok">
-                                            <strong>"Vidéo prête ✔"</strong>
+                                            <strong>{tx.video_ready}</strong>
                                             <span>{path.clone()}</span>
-                                            {p.map(|p| view! { <small>{format!("{} images en {}", p.total, fmt_ms(p.elapsed_ms))}</small> })}
+                                            {p.map(|p| view! { <small>{i18n::frames_in(l, p.total, &fmt_ms(p.elapsed_ms))}</small> })}
                                         </div>
                                         <div class="row">
-                                            <button class="btn primary grow" on:click=move |_| open_path("open_file", p1.clone())>"Lire la vidéo"</button>
-                                            <button class="btn grow" on:click=move |_| open_path("reveal", p2.clone())>"Afficher dans le dossier"</button>
+                                            <button class="btn primary grow" on:click=move |_| open_path("open_file", p1.clone())>{tx.play}</button>
+                                            <button class="btn grow" on:click=move |_| open_path("reveal", p2.clone())>{tx.reveal}</button>
                                         </div>
-                                        <button class="btn wide ghost" on:click=move |_| start_render() disabled=move || !can_render()>"Relancer le rendu"</button>
+                                        <button class="btn wide ghost" on:click=move |_| start_render() disabled=move || !can_render()>{tx.rerender}</button>
                                     }.into_any()
                                 }
                                 other => view! {
                                     {match other {
-                                        Phase::Error(e) => Some(view! { <div class="result err"><strong>"Échec du rendu"</strong><pre>{e}</pre></div> }.into_any()),
-                                        Phase::Cancelled => Some(view! { <div class="result"><strong>"Rendu annulé"</strong></div> }.into_any()),
+                                        Phase::Error(e) => Some(view! { <div class="result err"><strong>{tx.render_failed}</strong><pre>{e}</pre></div> }.into_any()),
+                                        Phase::Cancelled => Some(view! { <div class="result"><strong>{tx.render_cancelled}</strong></div> }.into_any()),
                                         _ => None,
                                     }}
                                     <button class="btn primary big wide" on:click=move |_| start_render() disabled=move || !can_render()>
-                                        "Exporter la vidéo"
+                                        {tx.export_btn}
                                     </button>
                                     <p class="hint center">{move || {
-                                        if !tools_ok() { "Chromium (Chrome/Edge) et ffmpeg sont nécessaires." }
-                                        else if input.get().trim().is_empty() { "Choisissez d'abord une animation HTML." }
-                                        else { "Chaque image est rendue à temps fixe : aucune saccade, quelle que soit la machine." }
+                                        let tx = t();
+                                        if !tools_ok() { tx.need_tools }
+                                        else if input.get().trim().is_empty() { tx.need_input }
+                                        else { tx.ready_hint }
                                     }}</p>
                                 }.into_any(),
                             }
@@ -632,25 +667,7 @@ pub fn App() -> impl IntoView {
                     </div>
                 </section>
             </main>
-            <div class="drop-overlay"><div>"Déposez pour charger"</div></div>
+            <div class="drop-overlay"><div>{move || t().drop_overlay}</div></div>
         </div>
-    }
-}
-
-fn parse_f64(s: String) -> Result<f64, std::num::ParseFloatError> {
-    s.trim().replace(',', ".").parse()
-}
-
-fn browser_name(path: Option<&str>) -> &'static str {
-    let Some(p) = path else { return "Chromium introuvable" };
-    let p = p.to_ascii_lowercase();
-    if p.contains("msedge") || p.contains("edge") {
-        "Edge"
-    } else if p.contains("brave") {
-        "Brave"
-    } else if p.contains("chromium") {
-        "Chromium"
-    } else {
-        "Chrome"
     }
 }

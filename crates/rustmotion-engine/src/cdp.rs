@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket};
 
+use crate::tr;
+
 pub struct Cdp {
     ws: WebSocket<TcpStream>,
     next_id: u64,
@@ -23,26 +25,26 @@ impl Cdp {
     pub fn connect(ws_url: &str) -> Result<Self> {
         let rest = ws_url
             .strip_prefix("ws://")
-            .ok_or_else(|| anyhow!("URL DevTools inattendue : {ws_url}"))?;
+            .ok_or_else(|| anyhow!(tr!(format!("URL DevTools inattendue : {ws_url}"), format!("unexpected DevTools URL: {ws_url}"))))?;
         let host = rest.split('/').next().unwrap_or(rest);
-        let stream = TcpStream::connect(host).with_context(|| format!("connexion à {host}"))?;
+        let stream = TcpStream::connect(host).with_context(|| tr!(format!("connexion à {host}"), format!("connecting to {host}")))?;
         stream.set_nodelay(true).ok();
         stream.set_read_timeout(Some(Duration::from_secs(120))).ok();
         let config = WebSocketConfig::default()
             .max_message_size(Some(1 << 30))
             .max_frame_size(Some(1 << 30));
         let (ws, _) = tungstenite::client::client_with_config(ws_url, stream, Some(config))
-            .map_err(|e| anyhow!("handshake WebSocket DevTools : {e}"))?;
+            .map_err(|e| anyhow!(tr!(format!("handshake WebSocket DevTools : {e}"), format!("DevTools WebSocket handshake: {e}"))))?;
         Ok(Self { ws, next_id: 1, events: VecDeque::new() })
     }
 
     fn read_json(&mut self) -> Result<Value> {
         loop {
-            let msg = self.ws.read().context("lecture WebSocket DevTools")?;
+            let msg = self.ws.read().context(tr!("lecture WebSocket DevTools", "reading DevTools WebSocket"))?;
             match msg {
                 Message::Text(t) => return Ok(serde_json::from_str(t.as_str())?),
                 Message::Binary(b) => return Ok(serde_json::from_slice(&b)?),
-                Message::Close(_) => bail!("le navigateur a fermé la connexion DevTools"),
+                Message::Close(_) => bail!(tr!("le navigateur a fermé la connexion DevTools", "the browser closed the DevTools connection")),
                 _ => continue,
             }
         }
@@ -58,13 +60,13 @@ impl Cdp {
         }
         self.ws
             .send(Message::Text(msg.to_string().into()))
-            .with_context(|| format!("envoi de {method}"))?;
+            .with_context(|| tr!(format!("envoi de {method}"), format!("sending {method}")))?;
         loop {
             let v = self.read_json()?;
             if v.get("id").and_then(Value::as_u64) == Some(id) {
                 if let Some(err) = v.get("error") {
-                    let m = err.get("message").and_then(Value::as_str).unwrap_or("erreur inconnue");
-                    bail!("{method} : {m}");
+                    let m = err.get("message").and_then(Value::as_str).unwrap_or(tr!("erreur inconnue", "unknown error"));
+                    bail!(tr!(format!("{method} : {m}"), format!("{method}: {m}")));
                 }
                 return Ok(v.get("result").cloned().unwrap_or(Value::Null));
             }
@@ -90,7 +92,7 @@ impl Cdp {
         let deadline = Instant::now() + timeout;
         loop {
             if Instant::now() > deadline {
-                bail!("délai dépassé en attendant {method}");
+                bail!(tr!(format!("délai dépassé en attendant {method}"), format!("timed out waiting for {method}")));
             }
             let v = self.read_json()?;
             if matches(&v) {
@@ -134,9 +136,9 @@ pub struct Page {
 impl Page {
     pub fn create(cdp: &mut Cdp) -> Result<Self> {
         let r = cdp.call(None, "Target.createTarget", json!({ "url": "about:blank" }))?;
-        let target_id = r["targetId"].as_str().ok_or_else(|| anyhow!("pas de targetId"))?.to_string();
+        let target_id = r["targetId"].as_str().ok_or_else(|| anyhow!(tr!("pas de targetId", "no targetId")))?.to_string();
         let r = cdp.call(None, "Target.attachToTarget", json!({ "targetId": target_id, "flatten": true }))?;
-        let session = r["sessionId"].as_str().ok_or_else(|| anyhow!("pas de sessionId"))?.to_string();
+        let session = r["sessionId"].as_str().ok_or_else(|| anyhow!(tr!("pas de sessionId", "no sessionId")))?.to_string();
         Ok(Self { session, target_id })
     }
 
@@ -155,8 +157,8 @@ impl Page {
             let text = ex["exception"]["description"]
                 .as_str()
                 .or_else(|| ex["text"].as_str())
-                .unwrap_or("exception JS");
-            bail!("erreur JS : {text}");
+                .unwrap_or("JS exception");
+            bail!(tr!(format!("erreur JS : {text}"), format!("JS error: {text}")));
         }
         Ok(r["result"]["value"].clone())
     }
@@ -164,6 +166,6 @@ impl Page {
     /// Capture d'écran ; renvoie le base64 brut.
     pub fn screenshot_b64(&self, cdp: &mut Cdp, params: Value) -> Result<String> {
         let r = self.call(cdp, "Page.captureScreenshot", params)?;
-        r["data"].as_str().map(str::to_string).ok_or_else(|| anyhow!("capture vide"))
+        r["data"].as_str().map(str::to_string).ok_or_else(|| anyhow!(tr!("capture vide", "empty screenshot")))
     }
 }

@@ -134,6 +134,15 @@
     await Promise.resolve();
   };
 
+  // Protocole « seek » : une page qui expose window.seek(t) (t en secondes) avec window.DURATION,
+  // ou window.RUSTMOTION.seek(t), dessine elle-même l'image à l'instant t ; on l'appelle à chaque image.
+  const pageSeek = () => {
+    const cfg = W.RUSTMOTION;
+    if (cfg && typeof cfg.seek === 'function') return cfg.seek;
+    if (typeof W.seek === 'function' && typeof W.DURATION === 'number') return W.seek;
+    return null;
+  };
+
   let lastT = -1;
   W.__rm = {
     version: 1,
@@ -158,6 +167,10 @@
       // bibliothèques qui lissent les à-coups (lagSmoothing de GSAP…) ne suivraient pas.
       while (t - now > MAX_STEP) await tick(now + MAX_STEP);
       await tick(t);
+      const draw = pageSeek();
+      if (draw) {
+        try { await draw.call(W, t / 1000); } catch (e) { console.error(e); }
+      }
       syncAnimations(t);
       await syncMedia(t);
       if (W.__rmWaitPaint !== false) await nextPaint();
@@ -186,10 +199,15 @@
         return el ? Number(el.getAttribute('content')) : null;
       };
       const cfg = (W.RUSTMOTION && typeof W.RUSTMOTION === 'object') ? W.RUSTMOTION : {};
+      const ok = (v) => v != null && isFinite(v) && v > 0;
       for (const k of ['duration', 'width', 'height', 'fps']) {
-        const v = cfg[k] != null ? Number(cfg[k]) : meta(k);
-        out.meta[k] = (v != null && isFinite(v) && v > 0) ? v : null;
+        let v = cfg[k] != null ? Number(cfg[k]) : meta(k);
+        // Repli sur les globales du protocole seek (window.WIDTH, window.HEIGHT, window.FPS).
+        if (!ok(v) && k !== 'duration' && typeof W[k.toUpperCase()] === 'number') v = W[k.toUpperCase()];
+        out.meta[k] = ok(v) ? v : null;
       }
+      out.seekApi = !!pageSeek();
+      out.scriptDuration = (out.seekApi && ok(W.DURATION)) ? W.DURATION : null;
       return out;
     },
   };

@@ -204,6 +204,8 @@ impl Stage {
 pub enum DurationSource {
     /// `<meta name="rustmotion:duration">` ou `window.RUSTMOTION.duration`.
     Page,
+    /// `window.DURATION` d'une page pilotée par `window.seek(t)`.
+    Script,
     /// Timeline globale GSAP.
     Gsap,
     /// Fin de la dernière animation CSS / Web Animations finie.
@@ -214,6 +216,7 @@ impl DurationSource {
     pub fn label(self, lang: Lang) -> &'static str {
         match self {
             DurationSource::Page => lang.pick("déclarée par la page", "declared by the page"),
+            DurationSource::Script => lang.pick("window.DURATION", "window.DURATION"),
             DurationSource::Gsap => lang.pick("timeline GSAP", "GSAP timeline"),
             DurationSource::Animations => lang.pick("animations CSS / Web Animations", "CSS / Web Animations"),
         }
@@ -247,6 +250,8 @@ pub struct ProbeInfo {
     /// Nombre d'animations CSS / Web Animations trouvées.
     pub animations: u32,
     pub gsap: bool,
+    /// La page dessine elle-même chaque image via `window.seek(t)`.
+    pub seek_api: bool,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub fps: Option<u32>,

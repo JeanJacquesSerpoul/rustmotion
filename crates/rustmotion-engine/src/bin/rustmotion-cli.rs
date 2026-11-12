@@ -196,7 +196,8 @@ fn run() -> Result<()> {
     }
 
     if s.output.is_empty() {
-        let base = input.trim_end_matches(['/', '\\']);
+        let (path, _) = rustmotion_engine::render::split_query(&input);
+        let base = path.trim_end_matches(['/', '\\']);
         let stem = std::path::Path::new(base).with_extension(s.codec.extension());
         s.output = if base.starts_with("http") {
             format!("rustmotion.{}", s.codec.extension())

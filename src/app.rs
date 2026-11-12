@@ -60,6 +60,21 @@ fn opt(s: String) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+/// Ajoute des paramètres d'URL à la source (`a=1&b=2`, ou `#ancre`).
+fn with_query(input: &str, query: &str) -> String {
+    let (input, query) = (input.trim(), query.trim().trim_start_matches('?'));
+    if input.is_empty() || query.is_empty() {
+        return input.to_string();
+    }
+    if query.starts_with('#') {
+        format!("{input}{query}")
+    } else if input.contains('?') && (input.starts_with("http://") || input.starts_with("https://")) {
+        format!("{input}&{query}")
+    } else {
+        format!("{input}?{query}")
+    }
+}
+
 fn parse_f64(s: String) -> Result<f64, std::num::ParseFloatError> {
     s.trim().replace(',', ".").parse()
 }
@@ -118,9 +133,13 @@ pub fn App() -> impl IntoView {
     let browser_path = RwSignal::new(String::new());
     let ffmpeg_path = RwSignal::new(String::new());
     let show_advanced = RwSignal::new(false);
+    // Paramètres d'URL transmis à la page (ex. « render=1 » pour un mode de rendu sans commandes).
+    let query = RwSignal::new(String::new());
+    let full_input = move || with_query(&input.get_untracked(), &query.get_untracked());
 
     let probe_info = RwSignal::new(None::<ProbeInfo>);
     let probing = RwSignal::new(false);
+    let probe_again = RwSignal::new(false);
     let probe_error = RwSignal::new(None::<String>);
     let phase = RwSignal::new(Phase::Idle);
     let progress = RwSignal::new(None::<Progress>);
@@ -160,8 +179,12 @@ pub fn App() -> impl IntoView {
     };
 
     let run_probe = move || {
-        let src = input.get_untracked();
-        if src.trim().is_empty() || probing.get_untracked() {
+        if input.get_untracked().trim().is_empty() {
+            return;
+        }
+        // Une analyse est déjà en cours : on la refera avec les réglages à jour dès qu'elle finit.
+        if probing.get_untracked() {
+            probe_again.set(true);
             return;
         }
         #[derive(Serialize)]
@@ -172,7 +195,7 @@ pub fn App() -> impl IntoView {
             browser: Option<String>,
         }
         let a = A {
-            input: src,
+            input: full_input(),
             width: width.get_untracked(),
             height: height.get_untracked(),
             browser: opt(browser_path.get_untracked()),
@@ -205,6 +228,33 @@ pub fn App() -> impl IntoView {
             probing.set(false);
         });
     };
+
+    Effect::new(move |_| {
+        if !probing.get() && probe_again.get_untracked() {
+            probe_again.set(false);
+            run_probe();
+        }
+    });
+
+    // Changer de format refait l'analyse (après une courte pause, le temps de taper les dimensions) :
+    // la miniature montre alors le cadrage réel de la vidéo.
+    let dims_gen = StoredValue::new(0u32);
+    Effect::new(move |prev: Option<(u32, u32)>| {
+        let dims = (width.get(), height.get());
+        if prev.is_some_and(|p| p != dims) && probe_info.get_untracked().is_some() {
+            dims_gen.update_value(|g| *g += 1);
+            let gen = dims_gen.get_value();
+            set_timeout(
+                move || {
+                    if dims_gen.get_value() == gen && phase.get_untracked() != Phase::Rendering {
+                        run_probe();
+                    }
+                },
+                std::time::Duration::from_millis(600),
+            );
+        }
+        dims
+    });
 
     let set_input = move |path: String| {
         input.set(path);
@@ -272,7 +322,7 @@ pub fn App() -> impl IntoView {
 
     let start_render = move || {
         let settings = RenderSettings {
-            input: input.get_untracked(),
+            input: full_input(),
             output: output.get_untracked(),
             width: width.get_untracked(),
             height: height.get_untracked(),
@@ -430,6 +480,17 @@ pub fn App() -> impl IntoView {
                             <button class="btn" on:click=move |_| pick("html", input, true) disabled=rendering>{move || t().btn_file}</button>
                             <button class="btn" on:click=move |_| pick_folder() disabled=rendering>{move || t().btn_folder}</button>
                         </div>
+                        <div class="query">
+                            <label class="lbl" for="query">{move || t().query_label}</label>
+                            <div class="query-field">
+                                <span>"?"</span>
+                                <input id="query" type="text" placeholder="render=1" prop:value=move || query.get()
+                                    on:change=move |ev| {
+                                        query.set(event_target_value(&ev).trim().trim_start_matches('?').to_string());
+                                        run_probe();
+                                    } />
+                            </div>
+                        </div>
                         <div class="probe">
                             {move || {
                                 let l = lang.get();
@@ -446,6 +507,7 @@ pub fn App() -> impl IntoView {
                                         {(!i.title.is_empty()).then(|| view! { <span class="chip strong">{i.title.clone()}</span> })}
                                         <span class="chip">{i18n::animations(l, i.animations)}</span>
                                         {i.gsap.then(|| view! { <span class="chip">"GSAP"</span> })}
+                                        {i.seek_api.then(|| view! { <span class="chip">{tx.seek_chip}</span> })}
                                         {match (i.duration, i.duration_source) {
                                             (Some(d), Some(src)) => view! { <span class="chip ok">{format!("{d:.2} s ({})", src.label(l))}</span> }.into_any(),
                                             _ => view! { <span class="chip warn">{tx.duration_unknown}</span> }.into_any(),

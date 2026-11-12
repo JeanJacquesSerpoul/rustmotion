@@ -14,7 +14,8 @@ identical from one render to the next, even when the page is heavy or the machin
 - Supported animation engines: CSS animations and transitions, the Web Animations API (including `await anim.finished`),
   `requestAnimationFrame` (canvas, WebGL, three.js, Lottie…), `setTimeout` / `setInterval`, `Date` / `performance.now`,
   GSAP, anime.js, `<video>` (re-synced on every frame).
-- Automatic duration detection (page meta tags, GSAP timeline, or finite CSS/WAAPI animations) with a preview thumbnail.
+- Automatic duration detection (page meta tags, `window.DURATION`, GSAP timeline, or finite CSS/WAAPI animations) with a preview thumbnail.
+- Script-driven pages (`.html` + `.js`): `window.seek(t)` is called on every frame; URL parameters (`?render=1`) on local files.
 - Formats: **MP4 H.264**, **MP4 H.265**, **MOV ProRes 4444** and **WebM VP9** (the last two with **transparency**).
 - Presets 1080p / 720p / 4K / 9:16 / 1:1 / 4:5, 24 → 60 fps, high-density rendering (devicePixelRatio 1×, 1.5×, 2×).
 - Adjustable quality (CRF), correct BT.709 colour conversion, optional audio track.
@@ -88,6 +89,32 @@ No changes are required. You can, however, declare settings that the analysis wi
 or in JavaScript: `window.RUSTMOTION = { duration: 6, fps: 30 }`.
 
 For a transparent export, the page must have a transparent background (`html, body { background: transparent }`).
+
+### Script-driven pages (HTML + JS)
+
+A page whose animation is fully computed by a script (often a `.js` file next to the `.html`)
+can expose two globals; RustMotion detects and uses them:
+
+```js
+window.DURATION = 100        // total duration, in seconds
+window.seek = (t) => { … }   // draws the frame at time t (seconds)
+window.READY = true          // optional: false while loading, true once everything is ready
+```
+
+On every frame, RustMotion advances its virtual clock **then** calls `window.seek(t)`.
+`window.WIDTH`, `window.HEIGHT` and `window.FPS` are read as suggested settings when present.
+
+### URL parameters
+
+Many pages have a render mode without player or controls (`?render=1`, `#scene3`…).
+In the app, type them into **URL parameters**; with the CLI, append them to the path:
+
+```bash
+rustmotion-cli "coulisses.html?render=1" -w 1280 -h 720 -s 1.5 --audio soundtrack.m4a
+```
+
+The preview thumbnail is refreshed when the format changes, so it shows the video's exact framing.
+A fixed-size stage (here 1280 × 720) is rendered at those dimensions, and the 1.5× scale gives sharp 1080p.
 
 ## How it works
 

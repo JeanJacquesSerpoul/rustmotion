@@ -112,7 +112,9 @@ pub fn ffmpeg_args(s: &RenderSettings, output: &Path) -> Vec<String> {
             Codec::Vp9 => push(&["-c:a", "libopus", "-b:a", "160k"]),
             _ => push(&["-c:a", "aac", "-b:a", "192k"]),
         }
-        push(&["-shortest"]);
+        // Pas de -shortest (il perd la dernière image) : l'audio est complété par du silence,
+        // puis -t coupe vidéo et audio à la durée exacte.
+        push(&["-af", "apad"]);
     }
     push(&["-r", &fps, "-t", &format!("{:.3}", s.duration)]);
     a.push(output.to_string_lossy().to_string());

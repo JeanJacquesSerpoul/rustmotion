@@ -40,6 +40,8 @@ pub fn resolve_input(input: &str) -> Result<(String, Option<StaticServer>)> {
     } else {
         input.to_string()
     };
+    // « page.html?render=1#scene » : la partie après ? ou # est transmise telle quelle à la page.
+    let (path_str, suffix) = split_query(&path_str);
     let path = PathBuf::from(&path_str);
     let path = path
         .canonicalize()
@@ -58,8 +60,20 @@ pub fn resolve_input(input: &str) -> Result<(String, Option<StaticServer>)> {
         (root, file)
     };
     let server = StaticServer::start(&root)?;
-    let url = server.url_for(&file);
+    let url = format!("{}{suffix}", server.url_for(&file));
     Ok((url, Some(server)))
+}
+
+/// Sépare un chemin local de ses paramètres d'URL (`?…` / `#…`).
+/// Un chemin qui existe tel quel n'est jamais découpé (un `#` peut faire partie d'un nom de fichier).
+pub fn split_query(input: &str) -> (String, String) {
+    if Path::new(input).exists() {
+        return (input.to_string(), String::new());
+    }
+    match input.find(['?', '#']) {
+        Some(i) => (input[..i].to_string(), input[i..].to_string()),
+        None => (input.to_string(), String::new()),
+    }
 }
 
 /// Une page chargée dans un navigateur headless, horloge virtuelle prête.
@@ -153,6 +167,11 @@ impl Session {
             ));
         }
         page.eval(&mut cdp, "window.__rm.init(false)")?;
+        // Une page qui pose `window.READY = false` signale qu'elle se prépare encore (30 s au plus).
+        page.eval(
+            &mut cdp,
+            "(async () => { for (let i = 0; i < 300 && window.READY === false; i++) await window.__rm.sleep(100); return true; })()",
+        )?;
 
         Ok(Self { cdp, page, _browser: browser, _server: server, width: o.width, height: o.height, scale: o.scale })
     }
@@ -203,11 +222,15 @@ pub fn probe(input: &str, width: u32, height: u32, browser_path: Option<&str>) -
         width: num(&meta["width"]).map(|x| x as u32),
         height: num(&meta["height"]).map(|x| x as u32),
         fps: num(&meta["fps"]).map(|x| x as u32),
+        seek_api: raw["seekApi"].as_bool().unwrap_or(false),
         ..Default::default()
     };
     if let Some(d) = num(&meta["duration"]) {
         info.duration = Some(d);
         info.duration_source = Some(DurationSource::Page);
+    } else if let Some(d) = num(&raw["scriptDuration"]) {
+        info.duration = Some(d);
+        info.duration_source = Some(DurationSource::Script);
     } else if let Some(d) = num(&raw["gsapDuration"]) {
         info.duration = Some(d);
         info.duration_source = Some(DurationSource::Gsap);

@@ -91,6 +91,9 @@ async fn pick_output(app: AppHandle, codec: Codec, current: Option<String>) -> R
 #[tauri::command]
 fn suggest_output(app: AppHandle, input: String, codec: Codec) -> String {
     let input = input.trim().trim_matches('"');
+    // « page.html?render=1 » : les paramètres d'URL ne font pas partie du nom de fichier.
+    let (input, _) = rustmotion_engine::render::split_query(input);
+    let input = input.as_str();
     let normalized = if cfg!(windows) { input.replace('/', "\\") } else { input.to_string() };
     let ext = codec.extension();
     let is_url = input.starts_with("http://") || input.starts_with("https://");

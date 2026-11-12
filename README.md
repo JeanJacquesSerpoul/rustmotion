@@ -78,7 +78,7 @@ cargo run -p rustmotion-engine --release -- examples/gsap-transparent.html -c pr
 ## Publier une version
 
 Le workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) fabrique les installateurs
-et la CLI pour Windows (x64), macOS (Apple Silicon et Intel) et Linux (x64), puis les joint à une
+et la CLI pour Windows (x64), macOS (Apple Silicon) et Linux (x64), puis les joint à une
 **release brouillon** sur GitHub.
 
 1. Mettez à jour la version dans `src-tauri/tauri.conf.json` (et, par cohérence, dans les `Cargo.toml`).

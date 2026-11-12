@@ -1,5 +1,5 @@
-# Fabrique les installateurs de RustMotion (Windows, macOS, Linux) et la CLI,
-# puis les attache à une release GitHub en brouillon.
+# Fabrique les installateurs de RustMotion (Windows x64, macOS Apple Silicon, Linux x64) et la CLI,
+# puis les attache à une release GitHub en brouillon. macOS Intel n'est volontairement pas produit.
 #
 # Déclenchement :
 #   - en poussant un tag « vX.Y.Z » (il doit correspondre à la version de src-tauri/tauri.conf.json) ;
@@ -69,7 +69,6 @@ jobs:
               '|---|---|---|',
               '| Windows x64 | `.msi` ou / or `.exe` (setup) | `rustmotion-cli-*-windows-x64.zip` |',
               '| macOS Apple Silicon | `*_aarch64.dmg` | `rustmotion-cli-*-macos-arm64.tar.gz` |',
-              '| macOS Intel | `*_x64.dmg` | `rustmotion-cli-*-macos-x64.tar.gz` |',
               '| Linux x64 | `.deb`, `.rpm`, `.AppImage` | `rustmotion-cli-*-linux-x64.tar.gz` |',
               '',
               '### Prérequis / Requirements',
@@ -105,9 +104,6 @@ jobs:
           - label: macos-arm64
             platform: macos-latest
             target: aarch64-apple-darwin
-          - label: macos-x64
-            platform: macos-latest
-            target: x86_64-apple-darwin
           - label: linux-x64
             platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu

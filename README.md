@@ -75,6 +75,33 @@ Exemple : incrustation transparente en ProRes 4444
 cargo run -p rustmotion-engine --release -- examples/gsap-transparent.html -c prores4444 --transparent -o lower-third.mov
 ```
 
+## Publier une version
+
+Le workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) fabrique les installateurs
+et la CLI pour Windows (x64), macOS (Apple Silicon et Intel) et Linux (x64), puis les joint à une
+**release brouillon** sur GitHub.
+
+1. Mettez à jour la version dans `src-tauri/tauri.conf.json` (et, par cohérence, dans les `Cargo.toml`).
+2. Committez, puis poussez un tag du même numéro :
+
+```bash
+git tag v0.1.0
+```
+
+```bash
+git push origin v0.1.0
+```
+
+3. Suivez la compilation dans l'onglet **Actions** (environ 15 à 25 minutes).
+4. Ouvrez la release brouillon dans **Releases**, relisez-la, puis cliquez sur **Publish release**.
+
+Le workflow peut aussi être lancé à la main (**Actions → Release → Run workflow**) : le tag est alors
+tiré de `tauri.conf.json`. Un tag qui ne correspond pas à cette version fait échouer le workflow.
+Relancer le workflow sur une version encore en brouillon remplace les fichiers déjà joints.
+
+Les binaires ne sont pas signés : Windows SmartScreen et macOS Gatekeeper affichent un avertissement
+au premier lancement.
+
 ## Préparer une page
 
 Aucune modification n'est nécessaire. Vous pouvez toutefois déclarer les réglages, qui seront repris par l'analyse :

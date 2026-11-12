@@ -75,6 +75,32 @@ Example: a transparent overlay in ProRes 4444
 cargo run -p rustmotion-engine --release -- examples/gsap-transparent.html -c prores4444 --transparent -o lower-third.mov
 ```
 
+## Publishing a version
+
+The [`.github/workflows/release.yml`](.github/workflows/release.yml) workflow builds the installers
+and the CLI for Windows (x64), macOS (Apple Silicon and Intel) and Linux (x64), then attaches them to a
+**draft release** on GitHub.
+
+1. Update the version in `src-tauri/tauri.conf.json` (and, for consistency, in the `Cargo.toml` files).
+2. Commit, then push a tag with the same number:
+
+```bash
+git tag v0.1.0
+```
+
+```bash
+git push origin v0.1.0
+```
+
+3. Follow the build in the **Actions** tab (about 15 to 25 minutes).
+4. Open the draft in **Releases**, review it, then click **Publish release**.
+
+The workflow can also be started by hand (**Actions → Release → Run workflow**): the tag then comes
+from `tauri.conf.json`. A tag that does not match that version makes the workflow fail.
+Re-running the workflow on a version that is still a draft replaces the files already attached.
+
+Binaries are not signed: Windows SmartScreen and macOS Gatekeeper show a warning on first launch.
+
 ## Preparing a page
 
 No changes are required. You can, however, declare settings that the analysis will pick up:

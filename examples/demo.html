@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>RustMotion — démo</title>
+<!-- Réglages lus par RustMotion (optionnels) -->
+<meta name="rustmotion:duration" content="6">
+<meta name="rustmotion:fps" content="30">
+<style>
+  :root { --bg: #0b0d17; --a: #ff5a36; --b: #4de1c1; --c: #f7c948; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); font-family: "Segoe UI", system-ui, sans-serif; color: #fff; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .stage { position: absolute; inset: 0; display: grid; place-items: center; }
+  h1 { font-size: 9vw; font-weight: 900; letter-spacing: -0.04em; display: flex; gap: .02em; }
+  h1 span { display: inline-block; opacity: 0; transform: translateY(60%) rotate(8deg);
+            animation: rise .9s cubic-bezier(.2,.9,.2,1.2) forwards; }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+  .bar { position: absolute; left: 10%; bottom: 18%; height: 1.2vw; width: 80%; border-radius: 1vw;
+         background: linear-gradient(90deg, var(--a), var(--c), var(--b)); transform-origin: left;
+         animation: grow 4s 1s ease-in-out both; }
+  @keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  .tag { position: absolute; top: 12%; font-size: 2.2vw; letter-spacing: .4em; text-transform: uppercase;
+         opacity: 0; transform: translateY(-20px); transition: opacity .8s ease, transform .8s ease; }
+  .tag.on { opacity: .85; transform: none; }
+  .dot { position: absolute; width: 4vw; height: 4vw; border-radius: 50%; background: var(--c); left: 10%; top: 72%; }
+  .clock { position: absolute; right: 2vw; bottom: 2vw; font: 600 1.6vw ui-monospace, monospace; opacity: .6; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="stage">
+  <div class="tag" id="tag">Rust · Tauri · Leptos</div>
+  <h1 id="title"></h1>
+  <div class="bar"></div>
+  <div class="dot" id="dot"></div>
+  <div class="clock" id="clock"></div>
+</div>
+<script>
+  // 1) Lettres animées en CSS avec délais échelonnés
+  const word = "RustMotion";
+  const h1 = document.getElementById('title');
+  [...word].forEach((ch, i) => {
+    const s = document.createElement('span');
+    s.textContent = ch;
+    s.style.animationDelay = (0.25 + i * 0.07) + 's';
+    s.style.color = i < 4 ? 'var(--a)' : '#fff';
+    h1.appendChild(s);
+  });
+
+  // 2) Transition CSS déclenchée par un timer
+  setTimeout(() => document.getElementById('tag').classList.add('on'), 1500);
+
+  // 3) Web Animations API enchaînées avec await .finished
+  (async () => {
+    const dot = document.getElementById('dot');
+    const opts = { duration: 1200, easing: 'cubic-bezier(.6,0,.2,1)', fill: 'forwards' };
+    await dot.animate([{ left: '10%' }, { left: '86%' }], { ...opts, delay: 1000 }).finished;
+    await dot.animate([{ transform: 'scale(1)' }, { transform: 'scale(2.2)', background: '#ff5a36' }], opts).finished;
+    dot.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 800, fill: 'forwards' });
+  })();
+
+  // 4) Canvas piloté par requestAnimationFrame + performance.now
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const clock = document.getElementById('clock');
+  const t0 = performance.now();
+  function frame(now) {
+    const t = (now - t0) / 1000;
+    const w = cv.width = innerWidth * devicePixelRatio, h = cv.height = innerHeight * devicePixelRatio;
+    ctx.clearRect(0, 0, w, h);
+    for (let i = 0; i < 40; i++) {
+      const a = i / 40 * Math.PI * 2 + t * 0.6;
+      const r = (0.28 + 0.06 * Math.sin(t * 2 + i)) * Math.min(w, h);
+      ctx.beginPath();
+      ctx.arc(w / 2 + Math.cos(a) * r * 1.6, h / 2 + Math.sin(a) * r, (4 + 3 * Math.sin(t * 3 + i)) * devicePixelRatio, 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${(i * 9 + t * 60) % 360}, 90%, 65%, .55)`;
+      ctx.fill();
+    }
+    clock.textContent = t.toFixed(3) + ' s';
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

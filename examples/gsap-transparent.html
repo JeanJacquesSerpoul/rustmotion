@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Lower third GSAP (fond transparent)</title>
+<meta name="rustmotion:width" content="1920">
+<meta name="rustmotion:height" content="1080">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; font-family: "Segoe UI", system-ui, sans-serif; }
+  .lt { position: absolute; left: 120px; bottom: 140px; display: flex; flex-direction: column; gap: 10px; }
+  .name { background: #ff5a36; color: #fff; font-size: 64px; font-weight: 800; padding: 10px 34px; clip-path: inset(0 100% 0 0); }
+  .role { background: #fff; color: #111; font-size: 34px; font-weight: 600; padding: 8px 34px; align-self: flex-start; clip-path: inset(0 100% 0 0); }
+</style>
+</head>
+<body>
+<div class="lt"><div class="name">Ada Lovelace</div><div class="role">Motion designer</div></div>
+<script>
+  // Timeline GSAP : RustMotion détecte sa durée automatiquement (4 s).
+  gsap.timeline()
+    .to(".name", { clipPath: "inset(0 0% 0 0)", duration: .7, ease: "power3.out" })
+    .to(".role", { clipPath: "inset(0 0% 0 0)", duration: .6, ease: "power3.out" }, "-=.3")
+    .to(".lt", { x: 0, duration: 1.6 })
+    .to(".lt", { opacity: 0, y: 30, duration: .5, ease: "power2.in" });
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+[build]
+target = "./index.html"
+
+[watch]
+ignore = ["./src-tauri", "./crates/rustmotion-engine", "./examples"]
+
+[serve]
+port = 1420
+open = false

@@ -447,7 +447,7 @@ pub fn App() -> impl IntoView {
                                         <span class="chip">{i18n::animations(l, i.animations)}</span>
                                         {i.gsap.then(|| view! { <span class="chip">"GSAP"</span> })}
                                         {match (i.duration, i.duration_source) {
-                                            (Some(d), Some(src)) => view! { <span class="chip ok">{format!("{d:.2} s · {}", src.label(l))}</span> }.into_any(),
+                                            (Some(d), Some(src)) => view! { <span class="chip ok">{format!("{d:.2} s ({})", src.label(l))}</span> }.into_any(),
                                             _ => view! { <span class="chip warn">{tx.duration_unknown}</span> }.into_any(),
                                         }}
                                         {i.infinite.then(|| view! { <span class="chip warn">{tx.infinite_hint}</span> })}
@@ -525,7 +525,7 @@ pub fn App() -> impl IntoView {
                         </div>
                         <Show when=move || codec.get().uses_crf()>
                             <div class="field">
-                                <label class="lbl">{move || t().quality}" "<em>{move || format!("CRF {} · {}", crf.get(), i18n::crf_label(lang.get(), crf.get()))}</em></label>
+                                <label class="lbl">{move || t().quality}" "<em>{move || format!("CRF {} ({})", crf.get(), i18n::crf_label(lang.get(), crf.get()))}</em></label>
                                 <input type="range" min="0" max="40" prop:value=move || crf.get()
                                     on:input=move |ev| if let Ok(v) = event_target_value(&ev).parse() { crf.set(v) } />
                             </div>

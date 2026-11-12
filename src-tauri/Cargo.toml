@@ -3,6 +3,7 @@ name = "rustmotion"
 version = "0.1.0"
 description = "RustMotion — convertisseur d'animations HTML en vidéo"
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "rustmotion_app_lib"

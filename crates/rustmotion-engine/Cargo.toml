@@ -2,6 +2,7 @@
 name = "rustmotion-engine"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 description = "Moteur de rendu HTML -> vidéo (Chrome headless + ffmpeg)"
 
 [lib]

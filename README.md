@@ -112,3 +112,7 @@ page HTML ──► serveur HTTP local ──► Chromium headless (CDP)
 - L'audio joué par la page n'est pas capturé : ajoutez une piste audio séparée.
 - Une simulation physique qui intègre `dt` entre deux `requestAnimationFrame` avance par pas de 1/fps (comme dans un vrai navigateur à cette cadence).
 - La vitesse dépend surtout de la capture d'écran de Chromium (environ 10 à 15 images/s en 1080p).
+
+## Licence
+
+Distribué sous licence [MIT](LICENSE).

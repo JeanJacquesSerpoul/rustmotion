@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use rustmotion_types::{Codec, Lang, ProbeInfo, Progress, RenderSettings, Stage, ToolStatus};
+use rustmotion_types::{Codec, Lang, ProbeInfo, Progress, RenderSettings, SourceFiles, Stage, ToolStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::{self, texts};
@@ -117,6 +117,7 @@ pub fn App() -> impl IntoView {
     // --- État ---------------------------------------------------------------
     let tools = RwSignal::new(None::<ToolStatus>);
     let input = RwSignal::new(String::new());
+    let files = RwSignal::new(None::<SourceFiles>);
     let output = RwSignal::new(String::new());
     let output_touched = RwSignal::new(false);
     let width = RwSignal::new(1920u32);
@@ -257,7 +258,22 @@ pub fn App() -> impl IntoView {
     });
 
     let set_input = move |path: String| {
-        input.set(path);
+        input.set(path.clone());
+        files.set(None);
+        if !path.trim().is_empty() {
+            #[derive(Serialize)]
+            struct A {
+                input: String,
+            }
+            spawn_local(async move {
+                if let Ok(f) = invoke::<_, SourceFiles>("inspect_source", &A { input: path.clone() }).await {
+                    // Ignore une réponse arrivée après un changement de source.
+                    if input.get_untracked() == path {
+                        files.set(Some(f));
+                    }
+                }
+            });
+        }
         probe_info.set(None);
         preview.set(None);
         if matches!(phase.get_untracked(), Phase::Done(_) | Phase::Error(_) | Phase::Cancelled) {
@@ -411,7 +427,9 @@ pub fn App() -> impl IntoView {
     };
     let tools_ok = move || tools.get().map(|t| t.browser.is_some() && t.ffmpeg.is_some()).unwrap_or(false);
     let can_render = move || {
-        !rendering() && tools_ok() && !input.get().trim().is_empty() && !output.get().trim().is_empty() && duration.get() > 0.0
+        // L'export exige une analyse réussie et sans motif de rejet.
+        let accepted = probe_info.get().is_some_and(|i| i.rejection().is_none()) && !probing.get();
+        !rendering() && tools_ok() && accepted && !input.get().trim().is_empty() && !output.get().trim().is_empty() && duration.get() > 0.0
     };
 
     // --- Vue ----------------------------------------------------------------
@@ -465,9 +483,27 @@ pub fn App() -> impl IntoView {
                                     </div>
                                 }.into_any()
                             } else {
+                                let tx = t();
+                                // Page HTML, puis son script compagnon de même nom.
+                                let script_row = files.get().and_then(|f| {
+                                    let name = f.expected_script.clone()?;
+                                    Some(if f.script_found {
+                                        let note = if f.script_linked { tx.script_linked } else { tx.script_injected };
+                                        view! {
+                                            <li class="ok"><b>{name}</b><span>{note}</span></li>
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <li class="warn"><b>{name}</b><span>{tx.script_missing}</span></li>
+                                        }.into_any()
+                                    })
+                                });
                                 view! {
                                     <div class="drop-file">
-                                        <strong>{file_name(&input.get())}</strong>
+                                        <ul class="files">
+                                            <li><b>{files.get().and_then(|f| f.html).unwrap_or_else(|| file_name(&input.get()))}</b><span>"HTML"</span></li>
+                                            {script_row}
+                                        </ul>
                                         <span>{input.get()}</span>
                                     </div>
                                 }.into_any()
@@ -513,6 +549,13 @@ pub fn App() -> impl IntoView {
                                             _ => view! { <span class="chip warn">{tx.duration_unknown}</span> }.into_any(),
                                         }}
                                         {i.infinite.then(|| view! { <span class="chip warn">{tx.infinite_hint}</span> })}
+                                        {
+                                            let blocking = i.blocking_missing();
+                                            i.missing_files.iter().filter(|f| !blocking.contains(f)).map(|f| view! {
+                                                <span class="chip warn">{i18n::file_not_found(l, f)}</span>
+                                            }).collect_view()
+                                        }
+                                        {i.rejection().map(|r| view! { <span class="chip err reject">{r.message(l)}</span> })}
                                     }.into_any(),
                                 }
                             }}
@@ -717,11 +760,19 @@ pub fn App() -> impl IntoView {
                                     <button class="btn primary big wide" on:click=move |_| start_render() disabled=move || !can_render()>
                                         {tx.export_btn}
                                     </button>
-                                    <p class="hint center">{move || {
-                                        let tx = t();
-                                        if !tools_ok() { tx.need_tools }
-                                        else if input.get().trim().is_empty() { tx.need_input }
-                                        else { tx.ready_hint }
+                                    <p class="hint center" class:refused=move || probe_info.get().is_some_and(|i| i.rejection().is_some())>{move || {
+                                        let l = lang.get();
+                                        let tx = texts(l);
+                                        if !tools_ok() { return tx.need_tools.to_string(); }
+                                        if input.get().trim().is_empty() { return tx.need_input.to_string(); }
+                                        if probing.get() { return tx.analysing.to_string(); }
+                                        match probe_info.get() {
+                                            None => tx.need_probe.to_string(),
+                                            Some(i) => match i.rejection() {
+                                                Some(r) => format!("{} {}", tx.export_refused, r.message(l)),
+                                                None => tx.ready_hint.to_string(),
+                                            },
+                                        }
                                     }}</p>
                                 }.into_any(),
                             }

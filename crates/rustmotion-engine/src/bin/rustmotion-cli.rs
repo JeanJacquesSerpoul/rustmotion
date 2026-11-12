@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::{anyhow, bail, Result};
 use rustmotion_engine::types::{Codec, Lang, RenderSettings, Stage};
-use rustmotion_engine::{lang, probe, render, set_lang, tool_status, tr, Outcome};
+use rustmotion_engine::{inspect_source, lang, probe, render, set_lang, tool_status, tr, Outcome};
 
 const HELP_FR: &str = "\
 RustMotion — convertit une animation HTML en vidéo
@@ -33,6 +33,8 @@ OPTIONS :
         --browser <chemin>   Navigateur Chromium à utiliser
         --ffmpeg <chemin>    ffmpeg à utiliser
         --lang <fr|en>       Langue des messages (défaut : langue du système)
+        --force              Exporte même si la page est refusée (fichiers manquants,
+                             aucune animation détectée)
         --probe              Analyse la page sans rendre
         --tools              Affiche les outils détectés
         --help               Affiche cette aide
@@ -64,6 +66,8 @@ OPTIONS:
         --browser <path>     Chromium browser to use
         --ffmpeg <path>      ffmpeg binary to use
         --lang <fr|en>       Message language (default: system language)
+        --force              Export even if the page is rejected (missing files,
+                             no animation detected)
         --probe              Analyse the page without rendering
         --tools              Show detected tools
         --help               Show this help
@@ -94,6 +98,7 @@ fn run() -> Result<()> {
     let mut s = RenderSettings::default();
     let mut duration_set = false;
     let mut probe_only = false;
+    let mut force = false;
     let mut input: Option<String> = None;
 
     fn val(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {
@@ -125,6 +130,7 @@ fn run() -> Result<()> {
                 return Ok(());
             }
             "--probe" => probe_only = true,
+            "--force" => force = true,
             "-o" | "--output" => s.output = val(&mut args, &a)?,
             "-w" | "--width" => s.width = num(val(&mut args, &a)?, &a)?,
             "-h" | "--height" => s.height = num(val(&mut args, &a)?, &a)?,
@@ -163,18 +169,43 @@ fn run() -> Result<()> {
     s.input = input.clone();
     let l = lang();
 
-    if probe_only || !duration_set {
-        eprint!("{}", tr!("analyse de la page… ", "analysing page… "));
-        let info = probe(&input, s.width, s.height, s.browser_path.as_deref())?;
-        eprintln!("ok");
-        if probe_only {
-            let mut v = serde_json::to_value(&info)?;
-            if let Some(t) = v.get_mut("thumbnail") {
-                *t = serde_json::Value::from(info.thumbnail.as_ref().map(|t| format!("<{} bytes>", t.len())));
-            }
-            println!("{}", serde_json::to_string_pretty(&v)?);
-            return Ok(());
+    // Fichiers de la source : la page et son script compagnon de même nom.
+    let files = inspect_source(&input)?;
+    if let Some(html) = &files.html {
+        let script = files.expected_script.clone().unwrap_or_default();
+        let note = if files.script_injected() {
+            tr!(format!(" + {script} (ajouté automatiquement)"), format!(" + {script} (added automatically)"))
+        } else if files.script_found {
+            format!(" + {script}")
+        } else {
+            tr!(format!(" — attention : {script} introuvable"), format!(" — warning: {script} not found"))
+        };
+        eprintln!("{} : {html}{note}", tr!("fichiers", "files"));
+    }
+
+    eprint!("{}", tr!("analyse de la page… ", "analysing page… "));
+    let info = probe(&input, s.width, s.height, s.browser_path.as_deref())?;
+    eprintln!("ok");
+    if probe_only {
+        let mut v = serde_json::to_value(&info)?;
+        if let Some(t) = v.get_mut("thumbnail") {
+            *t = serde_json::Value::from(info.thumbnail.as_ref().map(|t| format!("<{} bytes>", t.len())));
         }
+        v["files"] = serde_json::to_value(&files)?;
+        v["rejection"] = serde_json::Value::from(info.rejection().map(|r| r.message(l)));
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    for f in info.missing_files.iter().filter(|f| !info.blocking_missing().contains(f)) {
+        eprintln!("{} : {f}", tr!("attention, fichier introuvable", "warning, file not found"));
+    }
+    if let Some(r) = info.rejection() {
+        if !force {
+            bail!("{} {}", r.message(l), tr!("(--force pour exporter quand même)", "(use --force to export anyway)"));
+        }
+        eprintln!("{} {}", r.message(l), tr!("Export forcé.", "Forced export."));
+    }
+    if !duration_set {
         match (info.duration, info.duration_source) {
             (Some(d), Some(src)) => {
                 eprintln!("{} : {d:.2} s ({})", tr!("durée détectée", "detected duration"), src.label(l));

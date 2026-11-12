@@ -257,6 +257,91 @@ pub struct ProbeInfo {
     pub fps: Option<u32>,
     /// Miniature JPEG (data URL).
     pub thumbnail: Option<String>,
+    /// Fichiers demandés par la page mais introuvables (chemins relatifs au dossier servi).
+    #[serde(default)]
+    pub missing_files: Vec<String>,
+    /// Une activité d'animation a été détectée (animations CSS/WAAPI, requestAnimationFrame,
+    /// timers, GSAP, window.seek, vidéo…).
+    #[serde(default)]
+    pub is_motion: bool,
+}
+
+impl ProbeInfo {
+    /// Fichiers manquants qui empêchent la page de fonctionner (scripts et feuilles de style).
+    pub fn blocking_missing(&self) -> Vec<String> {
+        self.missing_files
+            .iter()
+            .filter(|f| {
+                let f = f.to_ascii_lowercase();
+                f.ends_with(".js") || f.ends_with(".mjs") || f.ends_with(".css")
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Raison de refuser l'export, le cas échéant.
+    pub fn rejection(&self) -> Option<Rejection> {
+        let missing = self.blocking_missing();
+        if !missing.is_empty() {
+            Some(Rejection::MissingFiles(missing))
+        } else if !self.is_motion {
+            Some(Rejection::NotMotion)
+        } else {
+            None
+        }
+    }
+}
+
+/// Pourquoi une page est refusée.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Rejection {
+    /// La page référence des scripts ou des styles absents : elle est incomplète.
+    MissingFiles(Vec<String>),
+    /// Aucune animation détectée : ce n'est pas un motion design.
+    NotMotion,
+}
+
+impl Rejection {
+    pub fn message(&self, lang: Lang) -> String {
+        match self {
+            Rejection::MissingFiles(files) => match lang {
+                Lang::Fr => format!("Page incomplète : fichier(s) introuvable(s) : {}.", files.join(", ")),
+                Lang::En => format!("Incomplete page: missing file(s): {}.", files.join(", ")),
+            },
+            Rejection::NotMotion => lang
+                .pick(
+                    "Aucune animation détectée : ce fichier n'est pas un motion design complet.",
+                    "No animation detected: this file is not a complete motion design.",
+                )
+                .to_string(),
+        }
+    }
+}
+
+/// Fichiers qui composent la source : la page HTML et son script compagnon de même nom.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SourceFiles {
+    /// Nom du fichier HTML (None pour une URL).
+    pub html: Option<String>,
+    /// Nom du script attendu à côté (`page.html` → `page.js`), pour une page locale.
+    pub expected_script: Option<String>,
+    /// Le script compagnon existe.
+    pub script_found: bool,
+    /// La page le charge déjà via `<script src>` ; sinon RustMotion l'ajoute.
+    pub script_linked: bool,
+}
+
+impl SourceFiles {
+    /// Le script compagnon existe mais n'est pas chargé par la page : il sera ajouté.
+    pub fn script_injected(&self) -> bool {
+        self.script_found && !self.script_linked
+    }
+
+    /// Page locale sans script compagnon.
+    pub fn script_missing(&self) -> bool {
+        self.expected_script.is_some() && !self.script_found
+    }
 }
 
 /// Outils externes détectés.

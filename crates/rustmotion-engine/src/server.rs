@@ -3,7 +3,7 @@
 
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::{anyhow, Result};
@@ -15,6 +15,7 @@ use crate::tr;
 pub struct StaticServer {
     server: Arc<Server>,
     handle: Option<JoinHandle<()>>,
+    missing: Arc<Mutex<Vec<String>>>,
     pub port: u16,
 }
 
@@ -31,37 +32,64 @@ const PATH_SET: &AsciiSet = &CONTROLS
     .add(b'}');
 
 impl StaticServer {
-    pub fn start(root: &Path) -> Result<Self> {
+    /// Sert `root`. `inject` = (page, script) : le script est ajouté en fin de page s'il ne le charge pas.
+    pub fn start(root: &Path, inject: Option<(PathBuf, String)>) -> Result<Self> {
         let root = root.canonicalize()?;
+        let inject = inject.and_then(|(page, script)| page.canonicalize().ok().map(|p| (p, script)));
         let server = Arc::new(Server::http("127.0.0.1:0").map_err(|e| anyhow!(tr!(format!("serveur local : {e}"), format!("local server: {e}"))))?);
         let port = server
             .server_addr()
             .to_ip()
             .map(|a| a.port())
             .ok_or_else(|| anyhow!(tr!("adresse du serveur local inconnue", "unknown local server address")))?;
-        let srv = server.clone();
+        let missing = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (srv, missing2) = (server.clone(), missing.clone());
         let handle = std::thread::spawn(move || {
             for req in srv.incoming_requests() {
                 let url = req.url().split(['?', '#']).next().unwrap_or("/").to_string();
                 let decoded = percent_decode_str(&url).decode_utf8_lossy().to_string();
                 let resp = match resolve(&root, &decoded) {
-                    Some(path) => match File::open(&path) {
-                        Ok(f) => {
-                            let mime = mime_for(&path);
-                            Response::from_file(f)
-                                .with_header(header("Content-Type", mime))
+                    Some(path) => {
+                        let injected = inject
+                            .as_ref()
+                            .filter(|(page, _)| *page == path)
+                            .and_then(|(_, script)| std::fs::read_to_string(&path).ok().map(|html| with_script(&html, script)));
+                        match injected {
+                            Some(html) => Response::from_string(html)
+                                .with_header(header("Content-Type", mime_for(&path)))
                                 .with_header(header("Cache-Control", "no-store"))
-                                .with_header(header("Access-Control-Allow-Origin", "*"))
-                                .boxed()
+                                .boxed(),
+                            None => match File::open(&path) {
+                                Ok(f) => Response::from_file(f)
+                                    .with_header(header("Content-Type", mime_for(&path)))
+                                    .with_header(header("Cache-Control", "no-store"))
+                                    .with_header(header("Access-Control-Allow-Origin", "*"))
+                                    .boxed(),
+                                Err(_) => Response::from_string("403").with_status_code(403).boxed(),
+                            },
                         }
-                        Err(_) => Response::from_string("403").with_status_code(403).boxed(),
-                    },
-                    None => Response::from_string("404").with_status_code(404).boxed(),
+                    }
+                    None => {
+                        let rel = decoded.trim_start_matches('/').to_string();
+                        // Le navigateur demande favicon.ico de lui-même : ce n'est pas un fichier de la page.
+                        if !rel.is_empty() && rel != "favicon.ico" {
+                            let mut m = missing2.lock().unwrap();
+                            if !m.contains(&rel) {
+                                m.push(rel);
+                            }
+                        }
+                        Response::from_string("404").with_status_code(404).boxed()
+                    }
                 };
                 let _ = req.respond(resp);
             }
         });
-        Ok(Self { server, handle: Some(handle), port })
+        Ok(Self { server, handle: Some(handle), missing, port })
+    }
+
+    /// Fichiers demandés par la page mais absents du dossier.
+    pub fn missing_files(&self) -> Vec<String> {
+        self.missing.lock().unwrap().clone()
     }
 
     /// URL servie pour un chemin relatif à la racine.
@@ -81,6 +109,15 @@ impl Drop for StaticServer {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+}
+
+/// Ajoute `<script src="…">` juste avant `</body>` (ou en fin de document).
+fn with_script(html: &str, script: &str) -> String {
+    let tag = format!("<script src=\"{}\"></script>\n", utf8_percent_encode(script, PATH_SET));
+    match html.to_ascii_lowercase().rfind("</body>") {
+        Some(i) => format!("{}{tag}{}", &html[..i], &html[i..]),
+        None => format!("{html}\n{tag}"),
     }
 }
 

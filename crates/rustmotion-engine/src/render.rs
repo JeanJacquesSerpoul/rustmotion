@@ -12,6 +12,8 @@ use crate::browser::Browser;
 use crate::cdp::{Cdp, Page};
 use crate::encoder::{find_ffmpeg, Encoder};
 use crate::server::StaticServer;
+pub use crate::source::split_query;
+use crate::source::locate;
 use crate::tr;
 
 const SHIM: &str = include_str!("shim.js");
@@ -24,55 +26,16 @@ pub enum Outcome {
 }
 
 /// Convertit l'entrée utilisateur en URL (en démarrant un serveur local si besoin).
+/// Le script compagnon d'une page (`page.html` → `page.js`) est ajouté s'il n'est pas déjà chargé.
 pub fn resolve_input(input: &str) -> Result<(String, Option<StaticServer>)> {
-    let input = input.trim().trim_matches('"').trim();
-    if input.is_empty() {
-        bail!(tr!("aucune source indiquée", "no input given"));
-    }
-    let lower = input.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
-        return Ok((input.to_string(), None));
-    }
-    let path_str = if lower.starts_with("file:///") {
-        let rest = &input[8..];
-        let decoded = percent_encoding::percent_decode_str(rest).decode_utf8_lossy().to_string();
-        if cfg!(windows) { decoded } else { format!("/{decoded}") }
-    } else {
-        input.to_string()
-    };
-    // « page.html?render=1#scene » : la partie après ? ou # est transmise telle quelle à la page.
-    let (path_str, suffix) = split_query(&path_str);
-    let path = PathBuf::from(&path_str);
-    let path = path
-        .canonicalize()
-        .with_context(|| tr!(format!("fichier introuvable : {path_str}"), format!("file not found: {path_str}")))?;
-    let (root, file) = if path.is_dir() {
-        if !path.join("index.html").is_file() {
-            bail!(tr!(
-                format!("le dossier ne contient pas d'index.html : {}", path.display()),
-                format!("the folder has no index.html: {}", path.display())
-            ));
+    match locate(input)? {
+        None => Ok((input.trim().trim_matches('"').trim().to_string(), None)),
+        Some(p) => {
+            let inject = p.inject_script.map(|script| (p.root.join(&p.file), script));
+            let server = StaticServer::start(&p.root, inject)?;
+            let url = format!("{}{}", server.url_for(&p.file), p.suffix);
+            Ok((url, Some(server)))
         }
-        (path.clone(), "index.html".to_string())
-    } else {
-        let root = path.parent().ok_or_else(|| anyhow!(tr!("chemin invalide", "invalid path")))?.to_path_buf();
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
-        (root, file)
-    };
-    let server = StaticServer::start(&root)?;
-    let url = format!("{}{suffix}", server.url_for(&file));
-    Ok((url, Some(server)))
-}
-
-/// Sépare un chemin local de ses paramètres d'URL (`?…` / `#…`).
-/// Un chemin qui existe tel quel n'est jamais découpé (un `#` peut faire partie d'un nom de fichier).
-pub fn split_query(input: &str) -> (String, String) {
-    if Path::new(input).exists() {
-        return (input.to_string(), String::new());
-    }
-    match input.find(['?', '#']) {
-        Some(i) => (input[..i].to_string(), input[i..].to_string()),
-        None => (input.to_string(), String::new()),
     }
 }
 
@@ -82,7 +45,7 @@ pub struct Session {
     pub cdp: Cdp,
     pub page: Page,
     _browser: Browser,
-    _server: Option<StaticServer>,
+    server: Option<StaticServer>,
     pub width: u32,
     pub height: u32,
     pub scale: f64,
@@ -173,7 +136,7 @@ impl Session {
             "(async () => { for (let i = 0; i < 300 && window.READY === false; i++) await window.__rm.sleep(100); return true; })()",
         )?;
 
-        Ok(Self { cdp, page, _browser: browser, _server: server, width: o.width, height: o.height, scale: o.scale })
+        Ok(Self { cdp, page, _browser: browser, server, width: o.width, height: o.height, scale: o.scale })
     }
 
     /// Avance l'horloge virtuelle à `t_ms`.
@@ -243,6 +206,12 @@ pub fn probe(input: &str, width: u32, height: u32, browser_path: Option<&str>) -
     let t = info.duration.map(|d| d * 500.0).unwrap_or(1000.0).min(10_000.0);
     sess.seek(t)?;
     info.thumbnail = sess.thumbnail(480).ok();
+
+    // Contrôles : la page anime-t-elle quelque chose (y compris ce qui démarre en cours de route),
+    // et tous les fichiers qu'elle demande existent-ils ?
+    let late = sess.page.eval(&mut sess.cdp, "window.__rm.isMotion()").ok();
+    info.is_motion = raw["isMotion"].as_bool().unwrap_or(false) || late == Some(Value::Bool(true));
+    info.missing_files = sess.server.as_ref().map(|s| s.missing_files()).unwrap_or_default();
     Ok(info)
 }
 

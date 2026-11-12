@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rustmotion_engine::{tr, Outcome};
-use rustmotion_types::{Codec, Lang, ProbeInfo, RenderSettings, ToolStatus};
+use rustmotion_types::{Codec, Lang, ProbeInfo, RenderSettings, SourceFiles, ToolStatus};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
@@ -119,6 +119,12 @@ fn suggest_output(app: AppHandle, input: String, codec: Codec) -> String {
     candidate.display().to_string()
 }
 
+/// Fichiers qui composent la source (page HTML + script compagnon), sans lancer de navigateur.
+#[tauri::command]
+async fn inspect_source(input: String) -> Result<SourceFiles, String> {
+    blocking(move || rustmotion_engine::inspect_source(&input).map_err(|e| format!("{e:#}"))).await
+}
+
 #[tauri::command]
 async fn probe(input: String, width: u32, height: u32, browser: Option<String>) -> Result<ProbeInfo, String> {
     blocking(move || {
@@ -179,6 +185,7 @@ pub fn run() {
             pick_folder,
             pick_output,
             suggest_output,
+            inspect_source,
             probe,
             render,
             cancel_render,

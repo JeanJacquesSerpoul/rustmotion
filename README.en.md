@@ -66,7 +66,7 @@ rustmotion-cli <input> [options]
   -r, --fps <n>            -d, --duration <s> --start <s>
   -c, --codec h264|h265|prores4444|vp9      --crf <n>   --transparent
   --audio <file>           --wait <ms>        --browser <path>     --ffmpeg <path>
-  --lang fr|en             --probe            --tools              --help
+  --lang fr|en             --probe            --tools              --force   --help
 ```
 
 Example: a transparent overlay in ProRes 4444
@@ -89,6 +89,23 @@ No changes are required. You can, however, declare settings that the analysis wi
 or in JavaScript: `window.RUSTMOTION = { duration: 6, fps: 30 }`.
 
 For a transparent export, the page must have a transparent background (`html, body { background: transparent }`).
+
+### HTML file + JS file
+
+A motion design often ships as two files: `coulisses.html` and `coulisses.js`.
+RustMotion takes both by default:
+
+- the app shows the page and its script with the same name;
+- if the page does not load that script itself, it is **added automatically** at the end of the page;
+- if it is missing, a **warning** says so: the HTML page must then contain the whole animation.
+
+The page is checked before exporting; the export is **refused** when:
+
+- a script or stylesheet requested by the page cannot be found (incomplete page);
+- no animation is detected (no CSS / Web Animations, `requestAnimationFrame`, timer, GSAP,
+  `window.seek` or video): it is not a complete motion design.
+
+Other missing files (sound, image…) only raise a warning. With the CLI, `--force` overrides the refusal.
 
 ### Script-driven pages (HTML + JS)
 

@@ -23,6 +23,11 @@ pub struct Texts {
     pub reanalyse: &'static str,
     pub query_label: &'static str,
     pub seek_chip: &'static str,
+    pub script_linked: &'static str,
+    pub script_injected: &'static str,
+    pub script_missing: &'static str,
+    pub need_probe: &'static str,
+    pub export_refused: &'static str,
     pub duration_unknown: &'static str,
     pub infinite_hint: &'static str,
     // Format
@@ -93,6 +98,11 @@ pub static FR: Texts = Texts {
     reanalyse: "Ré-analyser",
     query_label: "Paramètres d'URL (optionnel)",
     seek_chip: "Pilotée par window.seek()",
+    script_linked: "chargé par la page",
+    script_injected: "ajouté automatiquement",
+    script_missing: "introuvable : la page HTML doit contenir toute l'animation",
+    need_probe: "La page doit être analysée avant l'export.",
+    export_refused: "Export refusé.",
     duration_unknown: "Durée non détectée",
     infinite_hint: "Animation infinie : fixez la durée",
     format: "Format",
@@ -160,6 +170,11 @@ pub static EN: Texts = Texts {
     reanalyse: "Re-analyse",
     query_label: "URL parameters (optional)",
     seek_chip: "Driven by window.seek()",
+    script_linked: "loaded by the page",
+    script_injected: "added automatically",
+    script_missing: "not found: the HTML page must contain the whole animation",
+    need_probe: "The page must be analysed before exporting.",
+    export_refused: "Export refused.",
     duration_unknown: "Duration not detected",
     infinite_hint: "Infinite animation: set the duration",
     format: "Format",
@@ -232,6 +247,13 @@ pub fn animations(lang: Lang, n: u32) -> String {
     match lang {
         Lang::Fr => format!("{n} animation{}", if n > 1 { "s" } else { "" }),
         Lang::En => format!("{n} animation{}", if n == 1 { "" } else { "s" }),
+    }
+}
+
+pub fn file_not_found(lang: Lang, file: &str) -> String {
+    match lang {
+        Lang::Fr => format!("Fichier introuvable : {file}"),
+        Lang::En => format!("File not found: {file}"),
     }
 }
 

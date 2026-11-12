@@ -66,7 +66,7 @@ rustmotion-cli <entrée> [options]
   -r, --fps <n>            -d, --duration <s> --start <s>
   -c, --codec h264|h265|prores4444|vp9      --crf <n>   --transparent
   --audio <fichier>        --wait <ms>        --browser <chemin>   --ffmpeg <chemin>
-  --lang fr|en             --probe            --tools              --help
+  --lang fr|en             --probe            --tools              --force   --help
 ```
 
 Exemple : incrustation transparente en ProRes 4444
@@ -89,6 +89,23 @@ Aucune modification n'est nécessaire. Vous pouvez toutefois déclarer les régl
 ou en JavaScript : `window.RUSTMOTION = { duration: 6, fps: 30 }`.
 
 Pour un export transparent, la page doit avoir un fond transparent (`html, body { background: transparent }`).
+
+### Fichier HTML + fichier JS
+
+Un motion design est souvent livré en deux fichiers : `coulisses.html` et `coulisses.js`.
+RustMotion prend les deux par défaut :
+
+- l'application affiche la page et son script de même nom ;
+- si la page ne charge pas ce script elle-même, il est **ajouté automatiquement** en fin de page ;
+- s'il est absent, une **alerte** l'indique : la page HTML doit alors contenir toute l'animation.
+
+Avant l'export, la page est contrôlée ; l'export est **refusé** si :
+
+- un script ou une feuille de style demandés par la page sont introuvables (page incomplète) ;
+- aucune animation n'est détectée (ni animation CSS / Web Animations, ni `requestAnimationFrame`,
+  ni timer, ni GSAP, ni `window.seek`, ni vidéo) : ce n'est pas un motion design complet.
+
+Les autres fichiers manquants (son, image…) donnent une simple alerte. En CLI, `--force` passe outre le refus.
 
 ### Page pilotée par script (HTML + JS)
 

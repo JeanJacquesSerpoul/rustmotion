@@ -159,6 +159,14 @@ input[type=text]:focus, input[type=number]:focus { border-color: var(--accent-li
   background: var(--raised); border: 1px solid var(--line); border-right: 0; border-radius: var(--r-control) 0 0 var(--r-control);
 }
 .query-field input[type=text] { border-radius: 0 var(--r-control) var(--r-control) 0; }
+.files { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.files li { display: flex; align-items: baseline; gap: 10px; }
+.files li b { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.files li span { font-size: 12px; color: var(--dim); }
+.files li.ok span { color: var(--ok); }
+.files li.warn b { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--dim); }
+.files li.warn span { color: var(--accent); }
+.hint.refused { color: var(--err); }
 .probe { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 26px; }
 .probe .link { margin-left: auto; align-self: center; }
 .chip {

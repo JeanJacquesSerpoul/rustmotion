@@ -31,12 +31,17 @@
   let timerSeq = 0;
   const timers = new Map();
   const toFn = (fn) => (typeof fn === 'function' ? fn : new Function(String(fn)));
+  // Compteurs d'activité : servent à reconnaître une page animée (voir probe()).
+  const activity = { delayedTimeouts: 0, intervals: 0, animations: 0 };
   W.setTimeout = (fn, delay, ...args) => {
     const id = ++timerSeq;
-    timers.set(id, { fn: toFn(fn), args, at: now + Math.max(0, Number(delay) || 0), every: 0 });
+    const d = Math.max(0, Number(delay) || 0);
+    if (d >= 16) activity.delayedTimeouts++;
+    timers.set(id, { fn: toFn(fn), args, at: now + d, every: 0 });
     return id;
   };
   W.setInterval = (fn, delay, ...args) => {
+    activity.intervals++;
     const every = Math.max(1, Number(delay) || 0);
     const id = ++timerSeq;
     timers.set(id, { fn: toFn(fn), args, at: now + every, every });
@@ -54,6 +59,7 @@
     for (const a of list) {
       if (!starts.has(a)) {
         starts.set(a, now);
+        activity.animations++;
         if (freezeByPause) { try { a.pause(); } catch (e) {} }
       }
     }
@@ -176,6 +182,13 @@
       if (W.__rmWaitPaint !== false) await nextPaint();
       return now;
     },
+    // La page anime-t-elle quelque chose ? (cumulé depuis le chargement)
+    isMotion() {
+      scan();
+      const video = document.querySelectorAll('video').length > 0;
+      return rafSeq > 0 || activity.intervals > 0 || activity.delayedTimeouts > 0 || activity.animations > 0
+        || video || !!pageSeek() || !!(W.gsap && W.gsap.globalTimeline);
+    },
     probe() {
       const out = { title: document.title || '', animations: 0, infinite: false, maxEnd: 0, gsap: false, gsapDuration: null, meta: {} };
       for (const a of scan()) {
@@ -207,6 +220,7 @@
         out.meta[k] = ok(v) ? v : null;
       }
       out.seekApi = !!pageSeek();
+      out.isMotion = this.isMotion();
       out.scriptDuration = (out.seekApi && ok(W.DURATION)) ? W.DURATION : null;
       return out;
     },

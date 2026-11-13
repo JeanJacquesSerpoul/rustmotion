@@ -138,6 +138,51 @@ pub struct RenderSettings {
     pub browser_path: Option<String>,
     /// Chemin explicite de ffmpeg (sinon détection automatique).
     pub ffmpeg_path: Option<String>,
+    /// Partie de la page à filmer.
+    #[serde(default)]
+    pub framing: Framing,
+}
+
+/// Partie de la page à filmer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Framing {
+    /// L'élément principal (grand canvas, svg, vidéo…) s'il ne remplit pas déjà la page ; sinon la page entière.
+    #[default]
+    Auto,
+    /// Toute la fenêtre.
+    Page,
+    /// L'élément désigné par ce sélecteur CSS.
+    Selector(String),
+}
+
+impl Framing {
+    /// `auto`, `page`, ou un sélecteur CSS.
+    pub fn parse(s: &str) -> Framing {
+        match s.trim() {
+            "" | "auto" => Framing::Auto,
+            "page" => Framing::Page,
+            sel => Framing::Selector(sel.to_string()),
+        }
+    }
+}
+
+/// Élément sur lequel la vidéo est cadrée.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrameInfo {
+    /// Description courte : `canvas#cv`, `svg.scene`…
+    pub label: String,
+    /// Taille de l'élément une fois ajusté, en pixels CSS.
+    pub width: f64,
+    pub height: f64,
+}
+
+impl FrameInfo {
+    /// Hauteur de sortie pour une largeur donnée, en gardant les proportions de l'élément (arrondie au pair).
+    pub fn height_for(&self, width: u32) -> u32 {
+        let h = width as f64 * self.height / self.width.max(1.0);
+        ((h / 2.0).round() * 2.0).max(2.0) as u32
+    }
 }
 
 impl Default for RenderSettings {
@@ -158,6 +203,7 @@ impl Default for RenderSettings {
             wait_ms: 250,
             browser_path: None,
             ffmpeg_path: None,
+            framing: Framing::Auto,
         }
     }
 }
@@ -204,8 +250,12 @@ impl Stage {
 pub enum DurationSource {
     /// `<meta name="rustmotion:duration">` ou `window.RUSTMOTION.duration`.
     Page,
-    /// `window.DURATION` d'une page pilotée par `window.seek(t)`.
+    /// `window.DURATION` (ou `__DURATION`) déclarée par le script de la page.
     Script,
+    /// Lecteur intégré de la page : horloge « 0:00 / 1:08 » et curseur de position.
+    Player,
+    /// Durée d'une vidéo ou d'un son de la page.
+    Media,
     /// Timeline globale GSAP.
     Gsap,
     /// Fin de la dernière animation CSS / Web Animations finie.
@@ -217,6 +267,8 @@ impl DurationSource {
         match self {
             DurationSource::Page => lang.pick("déclarée par la page", "declared by the page"),
             DurationSource::Script => lang.pick("window.DURATION", "window.DURATION"),
+            DurationSource::Player => lang.pick("lecteur de la page", "page's player"),
+            DurationSource::Media => lang.pick("vidéo / son de la page", "page's video / audio"),
             DurationSource::Gsap => lang.pick("timeline GSAP", "GSAP timeline"),
             DurationSource::Animations => lang.pick("animations CSS / Web Animations", "CSS / Web Animations"),
         }
@@ -264,6 +316,9 @@ pub struct ProbeInfo {
     /// timers, GSAP, window.seek, vidéo…).
     #[serde(default)]
     pub is_motion: bool,
+    /// Élément sur lequel la vidéo est cadrée (cadrage automatique ou sélecteur), s'il y en a un.
+    #[serde(default)]
+    pub frame: Option<FrameInfo>,
 }
 
 impl ProbeInfo {

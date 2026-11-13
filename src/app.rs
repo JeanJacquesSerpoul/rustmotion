@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use rustmotion_types::{Codec, Lang, ProbeInfo, Progress, RenderSettings, SourceFiles, Stage, ToolStatus};
+use rustmotion_types::{Codec, Framing, Lang, ProbeInfo, Progress, RenderSettings, SourceFiles, Stage, ToolStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::{self, texts};
@@ -134,6 +134,7 @@ pub fn App() -> impl IntoView {
     let browser_path = RwSignal::new(String::new());
     let ffmpeg_path = RwSignal::new(String::new());
     let show_advanced = RwSignal::new(false);
+    let framing = RwSignal::new(Framing::Auto);
     // Paramètres d'URL transmis à la page (ex. « render=1 » pour un mode de rendu sans commandes).
     let query = RwSignal::new(String::new());
     let full_input = move || with_query(&input.get_untracked(), &query.get_untracked());
@@ -194,12 +195,14 @@ pub fn App() -> impl IntoView {
             width: u32,
             height: u32,
             browser: Option<String>,
+            framing: Framing,
         }
         let a = A {
             input: full_input(),
             width: width.get_untracked(),
             height: height.get_untracked(),
             browser: opt(browser_path.get_untracked()),
+            framing: framing.get_untracked(),
         };
         probing.set(true);
         probe_error.set(None);
@@ -353,6 +356,7 @@ pub fn App() -> impl IntoView {
             wait_ms: wait_ms.get_untracked(),
             browser_path: opt(browser_path.get_untracked()),
             ffmpeg_path: opt(ffmpeg_path.get_untracked()),
+            framing: framing.get_untracked(),
         };
         #[derive(Serialize)]
         struct A {
@@ -421,9 +425,12 @@ pub fn App() -> impl IntoView {
     // --- Dérivés ------------------------------------------------------------
     let rendering = move || phase.get() == Phase::Rendering;
     let total_frames = move || ((duration.get() * fps.get() as f64).round() as u32).max(1);
+    // Vidéo cadrée sur un élément : sa hauteur découle des proportions de l'élément.
+    let framed = move || probe_info.get().and_then(|i| i.frame).filter(|_| framing.get() != Framing::Page);
+    let eff_height = move || framed().map(|f| f.height_for(width.get())).unwrap_or_else(|| height.get());
     let out_size = move || {
         let s = scale.get();
-        ((width.get() as f64 * s).round() as u32, (height.get() as f64 * s).round() as u32)
+        ((width.get() as f64 * s).round() as u32, (eff_height() as f64 * s).round() as u32)
     };
     let tools_ok = move || tools.get().map(|t| t.browser.is_some() && t.ffmpeg.is_some()).unwrap_or(false);
     let can_render = move || {
@@ -544,6 +551,7 @@ pub fn App() -> impl IntoView {
                                         <span class="chip">{i18n::animations(l, i.animations)}</span>
                                         {i.gsap.then(|| view! { <span class="chip">"GSAP"</span> })}
                                         {i.seek_api.then(|| view! { <span class="chip">{tx.seek_chip}</span> })}
+                                        {i.frame.as_ref().map(|f| view! { <span class="chip ok">{i18n::framed_on(l, &f.label)}</span> })}
                                         {match (i.duration, i.duration_source) {
                                             (Some(d), Some(src)) => view! { <span class="chip ok">{format!("{d:.2} s ({})", src.label(l))}</span> }.into_any(),
                                             _ => view! { <span class="chip warn">{tx.duration_unknown}</span> }.into_any(),
@@ -583,7 +591,9 @@ pub fn App() -> impl IntoView {
                             </div>
                             <div class="field">
                                 <label class="lbl">{move || t().height}</label>
-                                <input type="number" min="16" max="8192" prop:value=move || height.get()
+                                <input type="number" min="16" max="8192" prop:value=eff_height
+                                    disabled=move || framed().is_some()
+                                    title=move || if framed().is_some() { t().height_from_frame } else { "" }
                                     on:change=move |ev| if let Ok(v) = event_target_value(&ev).parse() { height.set(v) } />
                             </div>
                             <div class="field">
@@ -595,6 +605,21 @@ pub fn App() -> impl IntoView {
                                 <label class="lbl">{move || t().start_s}</label>
                                 <input type="number" min="0" step="0.1" prop:value=move || start.get()
                                     on:change=move |ev| if let Ok(v) = parse_f64(event_target_value(&ev)) { start.set(v.max(0.0)) } />
+                            </div>
+                        </div>
+                        <div class="field">
+                            <label class="lbl">{move || t().framing_label}</label>
+                            <div class="seg tight framing">
+                                {[Framing::Auto, Framing::Page].into_iter().map(|f| {
+                                    let f2 = f.clone();
+                                    let f3 = f.clone();
+                                    view! {
+                                        <button class="pill" class:active=move || framing.get() == f2
+                                            on:click=move |_| { framing.set(f3.clone()); run_probe(); }>
+                                            {move || if f == Framing::Auto { t().framing_auto } else { t().framing_page }}
+                                        </button>
+                                    }
+                                }).collect_view()}
                             </div>
                         </div>
                         <div class="fields two">

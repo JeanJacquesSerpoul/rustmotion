@@ -129,6 +129,7 @@ input[type=text], input[type=number] {
 }
 input[type=text]::placeholder { color: var(--dim); }
 input[type=text]:focus, input[type=number]:focus { border-color: var(--accent-line); }
+input:disabled { color: var(--muted); border-style: dashed; cursor: not-allowed; }
 
 .btn {
   background: var(--raised); border: 1px solid var(--line-strong); border-radius: var(--r-control);

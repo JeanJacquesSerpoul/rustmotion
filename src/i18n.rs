@@ -23,6 +23,10 @@ pub struct Texts {
     pub reanalyse: &'static str,
     pub query_label: &'static str,
     pub seek_chip: &'static str,
+    pub framing_label: &'static str,
+    pub framing_auto: &'static str,
+    pub framing_page: &'static str,
+    pub height_from_frame: &'static str,
     pub script_linked: &'static str,
     pub script_injected: &'static str,
     pub script_missing: &'static str,
@@ -98,6 +102,10 @@ pub static FR: Texts = Texts {
     reanalyse: "Ré-analyser",
     query_label: "Paramètres d'URL (optionnel)",
     seek_chip: "Pilotée par window.seek()",
+    framing_label: "Cadrage",
+    framing_auto: "Élément principal (auto)",
+    framing_page: "Page entière",
+    height_from_frame: "Hauteur imposée par les proportions de l'élément cadré",
     script_linked: "chargé par la page",
     script_injected: "ajouté automatiquement",
     script_missing: "introuvable : la page HTML doit contenir toute l'animation",
@@ -170,6 +178,10 @@ pub static EN: Texts = Texts {
     reanalyse: "Re-analyse",
     query_label: "URL parameters (optional)",
     seek_chip: "Driven by window.seek()",
+    framing_label: "Framing",
+    framing_auto: "Main element (auto)",
+    framing_page: "Whole page",
+    height_from_frame: "Height set by the framed element's proportions",
     script_linked: "loaded by the page",
     script_injected: "added automatically",
     script_missing: "not found: the HTML page must contain the whole animation",
@@ -247,6 +259,13 @@ pub fn animations(lang: Lang, n: u32) -> String {
     match lang {
         Lang::Fr => format!("{n} animation{}", if n > 1 { "s" } else { "" }),
         Lang::En => format!("{n} animation{}", if n == 1 { "" } else { "s" }),
+    }
+}
+
+pub fn framed_on(lang: Lang, label: &str) -> String {
+    match lang {
+        Lang::Fr => format!("Cadré sur {label}"),
+        Lang::En => format!("Framed on {label}"),
     }
 }
 

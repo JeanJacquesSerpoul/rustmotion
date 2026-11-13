@@ -14,12 +14,13 @@ identique d'un rendu à l'autre, même si la page est lourde ou la machine lente
 - Moteurs d'animation pris en charge : animations et transitions CSS, Web Animations API (y compris `await anim.finished`),
   `requestAnimationFrame` (canvas, WebGL, three.js, Lottie…), `setTimeout` / `setInterval`, `Date` / `performance.now`,
   GSAP, anime.js, `<video>` (recalée à chaque image).
-- Détection automatique de la durée (meta de la page, `window.DURATION`, timeline GSAP, ou animations CSS/WAAPI finies) et miniature d'aperçu.
-- Pages pilotées par script (`.html` + `.js`) : `window.seek(t)` est appelé à chaque image ; paramètres d'URL (`?render=1`) sur les fichiers locaux.
+- Détection automatique de la durée (meta de la page, `window.DURATION`, lecteur intégré « 0:00 / 1:08 », vidéo ou son, timeline GSAP, ou animations CSS/WAAPI finies) et miniature d'aperçu.
+- Pages pilotées par script (`.html` + `.js`) : `window.seek(t)` ou `window.__seek(t)` est appelé à chaque image ; paramètres d'URL (`?render=1`) sur les fichiers locaux.
 - Formats : **MP4 H.264**, **MP4 H.265**, **MOV ProRes 4444** et **WebM VP9** (ces deux derniers avec **transparence**).
 - Préréglages 1080p / 720p / 4K / 9:16 / 1:1 / 4:5, cadence 24 → 60 fps, rendu haute densité (devicePixelRatio 1×, 1,5×, 2×).
 - Qualité réglable (CRF), conversion couleur BT.709 correcte, piste audio optionnelle.
 - Progression en direct (vitesse, temps restant, aperçu), annulation propre.
+- Cadrage automatique sur l'élément principal (canvas, svg…) : ni lecteur ni marges dans la vidéo.
 - Glisser-déposer d'une page HTML (ou d'un fichier audio) sur la fenêtre.
 - **Bilingue français / anglais** : interface, dialogues et messages d'erreur. La langue suit celle du système
   au premier lancement, puis le choix fait dans l'en-tête est mémorisé.
@@ -66,7 +67,7 @@ rustmotion-cli <entrée> [options]
   -r, --fps <n>            -d, --duration <s> --start <s>
   -c, --codec h264|h265|prores4444|vp9      --crf <n>   --transparent
   --audio <fichier>        --wait <ms>        --browser <chemin>   --ffmpeg <chemin>
-  --lang fr|en             --probe            --tools              --force   --help
+  --frame auto|page|<css>  --lang fr|en       --probe            --tools              --force   --help
 ```
 
 Exemple : incrustation transparente en ProRes 4444
@@ -147,6 +148,18 @@ window.READY = true          // facultatif : mettre false pendant le chargement,
 
 À chaque image, RustMotion avance son horloge virtuelle **puis** appelle `window.seek(t)`.
 `window.WIDTH`, `window.HEIGHT` et `window.FPS` sont lus comme réglages suggérés s'ils existent.
+
+### Cadrage
+
+Beaucoup d'animations sont présentées dans une page avec un lecteur (boutons, curseur) et des marges.
+Par défaut (**Élément principal**), RustMotion filme seulement l'élément principal de la page : le plus
+grand canvas, svg, vidéo, image ou iframe visible, s'il occupe entre 40 % et 97 % de la fenêtre.
+La fenêtre est ajustée pour que l'élément fasse exactement la largeur demandée : la page le redessine
+à cette taille, l'image reste nette, et la hauteur suit les proportions de l'élément. Ses coins arrondis
+sont neutralisés pendant la capture. Une page qui remplit déjà la fenêtre est filmée en entier.
+
+**Page entière** filme toute la fenêtre. En CLI : `--frame auto`, `--frame page`, ou un sélecteur CSS
+(`--frame "#stage"`).
 
 ### Paramètres d'URL
 

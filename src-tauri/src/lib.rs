@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rustmotion_engine::{tr, Outcome};
-use rustmotion_types::{Codec, Lang, ProbeInfo, RenderSettings, SourceFiles, ToolStatus};
+use rustmotion_types::{Codec, Framing, Lang, ProbeInfo, RenderSettings, SourceFiles, ToolStatus};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
@@ -126,9 +126,15 @@ async fn inspect_source(input: String) -> Result<SourceFiles, String> {
 }
 
 #[tauri::command]
-async fn probe(input: String, width: u32, height: u32, browser: Option<String>) -> Result<ProbeInfo, String> {
+async fn probe(
+    input: String,
+    width: u32,
+    height: u32,
+    browser: Option<String>,
+    framing: Option<Framing>,
+) -> Result<ProbeInfo, String> {
     blocking(move || {
-        rustmotion_engine::probe(&input, width, height, browser.as_deref()).map_err(|e| format!("{e:#}"))
+        rustmotion_engine::probe(&input, width, height, browser.as_deref(), &framing.unwrap_or_default()).map_err(|e| format!("{e:#}"))
     })
     .await
 }

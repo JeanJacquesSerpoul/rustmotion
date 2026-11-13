@@ -14,12 +14,13 @@ identical from one render to the next, even when the page is heavy or the machin
 - Supported animation engines: CSS animations and transitions, the Web Animations API (including `await anim.finished`),
   `requestAnimationFrame` (canvas, WebGL, three.js, Lottie…), `setTimeout` / `setInterval`, `Date` / `performance.now`,
   GSAP, anime.js, `<video>` (re-synced on every frame).
-- Automatic duration detection (page meta tags, `window.DURATION`, GSAP timeline, or finite CSS/WAAPI animations) with a preview thumbnail.
-- Script-driven pages (`.html` + `.js`): `window.seek(t)` is called on every frame; URL parameters (`?render=1`) on local files.
+- Automatic duration detection (page meta tags, `window.DURATION`, built-in player « 0:00 / 1:08 », video or audio, GSAP timeline, or finite CSS/WAAPI animations) with a preview thumbnail.
+- Script-driven pages (`.html` + `.js`): `window.seek(t)` or `window.__seek(t)` is called on every frame; URL parameters (`?render=1`) on local files.
 - Formats: **MP4 H.264**, **MP4 H.265**, **MOV ProRes 4444** and **WebM VP9** (the last two with **transparency**).
 - Presets 1080p / 720p / 4K / 9:16 / 1:1 / 4:5, 24 → 60 fps, high-density rendering (devicePixelRatio 1×, 1.5×, 2×).
 - Adjustable quality (CRF), correct BT.709 colour conversion, optional audio track.
 - Live progress (speed, time left, preview) and clean cancellation.
+- Automatic framing on the main element (canvas, svg…): no player or margins in the video.
 - Drag and drop an HTML page (or an audio file) onto the window.
 - **Bilingual French / English**: interface, dialogs and error messages. The language follows the system
   on first launch, then the choice made in the header is remembered.
@@ -66,7 +67,7 @@ rustmotion-cli <input> [options]
   -r, --fps <n>            -d, --duration <s> --start <s>
   -c, --codec h264|h265|prores4444|vp9      --crf <n>   --transparent
   --audio <file>           --wait <ms>        --browser <path>     --ffmpeg <path>
-  --lang fr|en             --probe            --tools              --force   --help
+  --frame auto|page|<css>  --lang fr|en       --probe            --tools              --force   --help
 ```
 
 Example: a transparent overlay in ProRes 4444
@@ -146,6 +147,18 @@ window.READY = true          // optional: false while loading, true once everyth
 
 On every frame, RustMotion advances its virtual clock **then** calls `window.seek(t)`.
 `window.WIDTH`, `window.HEIGHT` and `window.FPS` are read as suggested settings when present.
+
+### Framing
+
+Many animations sit in a page with a player (buttons, slider) and margins. By default (**Main element**),
+RustMotion films only the page's main element: the largest visible canvas, svg, video, image or iframe,
+when it covers between 40 % and 97 % of the window. The window is resized so the element is exactly the
+requested width: the page redraws it at that size, the image stays sharp, and the height follows the
+element's proportions. Its rounded corners are neutralised during capture. A page that already fills the
+window is filmed whole.
+
+**Whole page** films the entire window. With the CLI: `--frame auto`, `--frame page`, or a CSS selector
+(`--frame "#stage"`).
 
 ### URL parameters
 

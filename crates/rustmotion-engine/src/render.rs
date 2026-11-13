@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use rustmotion_types::{DurationSource, ProbeInfo, Progress, RenderSettings, Stage};
+use rustmotion_types::{DurationSource, FrameInfo, Framing, ProbeInfo, Progress, RenderSettings, Stage};
 use serde_json::{json, Value};
 
 use crate::browser::Browser;
@@ -49,6 +49,18 @@ pub struct Session {
     pub width: u32,
     pub height: u32,
     pub scale: f64,
+    /// Zone filmée (pixels CSS) quand la vidéo est cadrée sur un élément.
+    pub clip: Option<Clip>,
+}
+
+/// Zone de la page filmée, en pixels CSS.
+#[derive(Debug, Clone)]
+pub struct Clip {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub label: String,
 }
 
 pub struct OpenOptions<'a> {
@@ -59,6 +71,7 @@ pub struct OpenOptions<'a> {
     pub transparent: bool,
     pub wait_ms: u32,
     pub browser_path: Option<&'a str>,
+    pub framing: &'a Framing,
 }
 
 impl Session {
@@ -136,7 +149,66 @@ impl Session {
             "(async () => { for (let i = 0; i < 300 && window.READY === false; i++) await window.__rm.sleep(100); return true; })()",
         )?;
 
-        Ok(Self { cdp, page, _browser: browser, server, width: o.width, height: o.height, scale: o.scale })
+        let mut sess =
+            Self { cdp, page, _browser: browser, server, width: o.width, height: o.height, scale: o.scale, clip: None };
+        sess.frame(o.framing)?;
+        Ok(sess)
+    }
+
+    /// Cadre la vidéo sur un élément : la fenêtre est agrandie ou réduite jusqu'à ce que l'élément
+    /// fasse exactement la largeur demandée (la page le redessine elle-même à cette taille, donc net),
+    /// puis seule sa zone est capturée. Sans élément à cadrer, la page entière est filmée.
+    fn frame(&mut self, framing: &Framing) -> Result<()> {
+        let selector = match framing {
+            Framing::Page => return Ok(()),
+            Framing::Auto => None,
+            Framing::Selector(sel) => Some(sel.as_str()),
+        };
+        let call = format!("window.__rm.frameRect({})", serde_json::to_string(&selector)?);
+        let target = self.width as f64;
+        let (mut vw, mut vh) = (self.width as f64, self.height as f64);
+        let mut rect = Value::Null;
+        for _ in 0..6 {
+            rect = self.page.eval(&mut self.cdp, &call)?;
+            if rect["missing"].as_bool() == Some(true) {
+                let sel = selector.unwrap_or_default();
+                bail!(tr!(format!("élément introuvable pour le cadrage : {sel}"), format!("no element matches the framing selector: {sel}")));
+            }
+            let Some(w) = rect["w"].as_f64() else { return Ok(()) };
+            if (w - target).abs() < 0.5 {
+                break;
+            }
+            // L'élément suit (à peu près) la taille de la fenêtre : on corrige proportionnellement.
+            let k = target / w;
+            (vw, vh) = ((vw * k).round().clamp(64.0, 8192.0), (vh * k).round().clamp(64.0, 8192.0));
+            self.page.call(
+                &mut self.cdp,
+                "Emulation.setDeviceMetricsOverride",
+                json!({ "width": vw, "height": vh, "deviceScaleFactor": self.scale, "mobile": false }),
+            )?;
+            // Laisse la page réagir au redimensionnement (événement resize, ResizeObserver, mise en page).
+            self.page.eval(&mut self.cdp, "window.__rm.sleep(120)")?;
+        }
+        let num = |k: &str| rect[k].as_f64().unwrap_or(0.0);
+        if num("w") < 2.0 || num("h") < 2.0 {
+            return Ok(());
+        }
+        (self.width, self.height) = (vw as u32, vh as u32);
+        self.clip = Some(Clip {
+            x: num("x").round(),
+            y: num("y").round(),
+            w: num("w").round(),
+            h: num("h").round(),
+            label: rect["label"].as_str().unwrap_or("").to_string(),
+        });
+        Ok(())
+    }
+
+    fn clip_json(&self, scale: f64) -> Value {
+        match &self.clip {
+            Some(c) => json!({ "x": c.x, "y": c.y, "width": c.w, "height": c.h, "scale": scale }),
+            None => json!({ "x": 0, "y": 0, "width": self.width, "height": self.height, "scale": scale }),
+        }
     }
 
     /// Avance l'horloge virtuelle à `t_ms`.
@@ -147,30 +219,27 @@ impl Session {
 
     /// Capture PNG pleine résolution (base64).
     pub fn capture_png(&mut self) -> Result<String> {
-        self.page.screenshot_b64(
-            &mut self.cdp,
-            json!({ "format": "png", "fromSurface": true, "captureBeyondViewport": false, "optimizeForSpeed": true }),
-        )
+        let mut params = json!({ "format": "png", "fromSurface": true, "captureBeyondViewport": false, "optimizeForSpeed": true });
+        if self.clip.is_some() {
+            params["clip"] = self.clip_json(1.0);
+        }
+        self.page.screenshot_b64(&mut self.cdp, params)
     }
 
     /// Miniature JPEG (data URL) d'environ `max_w` pixels de large.
     pub fn thumbnail(&mut self, max_w: u32) -> Result<String> {
-        let s = (max_w as f64 / (self.width as f64 * self.scale)).min(1.0);
-        let b64 = self.page.screenshot_b64(
-            &mut self.cdp,
-            json!({
-                "format": "jpeg", "quality": 70, "fromSurface": true,
-                "clip": { "x": 0, "y": 0, "width": self.width, "height": self.height, "scale": s }
-            }),
-        )?;
+        let w = self.clip.as_ref().map(|c| c.w).unwrap_or(self.width as f64);
+        let s = (max_w as f64 / (w * self.scale)).min(1.0);
+        let params = json!({ "format": "jpeg", "quality": 70, "fromSurface": true, "clip": self.clip_json(s) });
+        let b64 = self.page.screenshot_b64(&mut self.cdp, params)?;
         Ok(format!("data:image/jpeg;base64,{b64}"))
     }
 }
 
 /// Analyse une page : durée, nombre d'animations, GSAP, réglages déclarés, miniature.
-pub fn probe(input: &str, width: u32, height: u32, browser_path: Option<&str>) -> Result<ProbeInfo> {
+pub fn probe(input: &str, width: u32, height: u32, browser_path: Option<&str>, framing: &Framing) -> Result<ProbeInfo> {
     let mut sess = Session::open(
-        OpenOptions { input, width, height, scale: 1.0, transparent: false, wait_ms: 200, browser_path },
+        OpenOptions { input, width, height, scale: 1.0, transparent: false, wait_ms: 200, browser_path, framing },
         |_| {},
     )?;
     let raw = sess.page.eval(&mut sess.cdp, "window.__rm.probe()")?;
@@ -188,31 +257,46 @@ pub fn probe(input: &str, width: u32, height: u32, browser_path: Option<&str>) -
         seek_api: raw["seekApi"].as_bool().unwrap_or(false),
         ..Default::default()
     };
-    if let Some(d) = num(&meta["duration"]) {
-        info.duration = Some(d);
-        info.duration_source = Some(DurationSource::Page);
-    } else if let Some(d) = num(&raw["scriptDuration"]) {
-        info.duration = Some(d);
-        info.duration_source = Some(DurationSource::Script);
-    } else if let Some(d) = num(&raw["gsapDuration"]) {
-        info.duration = Some(d);
-        info.duration_source = Some(DurationSource::Gsap);
-    } else if let Some(ms) = num(&raw["maxEnd"]) {
-        info.duration = Some((ms / 1000.0 * 100.0).round() / 100.0);
-        info.duration_source = Some(DurationSource::Animations);
-    }
+    (info.duration, info.duration_source) = detect_duration(&raw).unzip();
 
     // Miniature au milieu de l'animation (ou à 1 s).
     let t = info.duration.map(|d| d * 500.0).unwrap_or(1000.0).min(10_000.0);
     sess.seek(t)?;
+    // Beaucoup de lecteurs n'affichent leur durée (« 0:00 / 1:08 ») qu'après leur premier rafraîchissement :
+    // sans durée trouvée au chargement, on relit la page une fois l'animation lancée.
+    if info.duration.is_none() {
+        if let Ok(again) = sess.page.eval(&mut sess.cdp, "window.__rm.probe()") {
+            (info.duration, info.duration_source) = detect_duration(&again).unzip();
+            if let Some(d) = info.duration {
+                let mid = (d * 500.0).min(10_000.0);
+                if mid > t {
+                    sess.seek(mid)?;
+                }
+            }
+        }
+    }
     info.thumbnail = sess.thumbnail(480).ok();
 
     // Contrôles : la page anime-t-elle quelque chose (y compris ce qui démarre en cours de route),
     // et tous les fichiers qu'elle demande existent-ils ?
     let late = sess.page.eval(&mut sess.cdp, "window.__rm.isMotion()").ok();
+    info.frame = sess.clip.as_ref().map(|c| FrameInfo { label: c.label.clone(), width: c.w, height: c.h });
     info.is_motion = raw["isMotion"].as_bool().unwrap_or(false) || late == Some(Value::Bool(true));
     info.missing_files = sess.server.as_ref().map(|s| s.missing_files()).unwrap_or_default();
     Ok(info)
+}
+
+/// Durée de l'animation, par ordre de fiabilité : réglage déclaré par la page, durée du script,
+/// lecteur intégré (horloge / curseur), vidéo ou son, timeline GSAP, animations CSS finies.
+fn detect_duration(raw: &Value) -> Option<(f64, DurationSource)> {
+    let num = |v: &Value| v.as_f64().filter(|x| x.is_finite() && *x > 0.0);
+    num(&raw["meta"]["duration"])
+        .map(|d| (d, DurationSource::Page))
+        .or_else(|| num(&raw["scriptDuration"]).map(|d| (d, DurationSource::Script)))
+        .or_else(|| num(&raw["playerDuration"]).map(|d| (d, DurationSource::Player)))
+        .or_else(|| num(&raw["mediaDuration"]).map(|d| ((d * 100.0).round() / 100.0, DurationSource::Media)))
+        .or_else(|| num(&raw["gsapDuration"]).map(|d| (d, DurationSource::Gsap)))
+        .or_else(|| num(&raw["maxEnd"]).map(|ms| ((ms / 1000.0 * 100.0).round() / 100.0, DurationSource::Animations)))
 }
 
 /// Rendu complet vers un fichier vidéo.
@@ -247,6 +331,7 @@ pub fn render(s: &RenderSettings, cancel: &AtomicBool, mut on_progress: impl FnM
             transparent: s.transparent && s.codec.supports_alpha(),
             wait_ms: s.wait_ms,
             browser_path: s.browser_path.as_deref(),
+            framing: &s.framing,
         },
         |st| emit(st, 0, None, &mut on_progress),
     )?;

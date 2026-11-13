@@ -142,11 +142,45 @@
 
   // Protocole « seek » : une page qui expose window.seek(t) (t en secondes) avec window.DURATION,
   // ou window.RUSTMOTION.seek(t), dessine elle-même l'image à l'instant t ; on l'appelle à chaque image.
+  // window.__seek(t) est un crochet d'automatisation explicite : accepté seul. window.seek, nom plus
+  // courant, n'est utilisé que si la page déclare aussi sa durée (pour ne pas appeler une fonction sans rapport).
+  const isNum = (v) => typeof v === 'number' && isFinite(v) && v > 0;
+  const scriptDuration = () => {
+    for (const k of ['DURATION', '__DURATION', '__duration']) if (isNum(W[k])) return W[k];
+    return null;
+  };
   const pageSeek = () => {
     const cfg = W.RUSTMOTION;
     if (cfg && typeof cfg.seek === 'function') return cfg.seek;
-    if (typeof W.seek === 'function' && typeof W.DURATION === 'number') return W.seek;
+    if (typeof W.__seek === 'function') return W.__seek;
+    if (typeof W.seek === 'function' && scriptDuration() !== null) return W.seek;
     return null;
+  };
+
+  // Durée affichée par le lecteur intégré de la page : horloge « 0:12 / 1:08 », précisée par le
+  // max d'un curseur <input type="range"> qui concorde (un curseur seul n'est retenu que si son pas
+  // est fractionnaire, signe qu'il compte en secondes).
+  const clockSeconds = (s) => s.split(':').reduce((acc, p) => acc * 60 + Number(p), 0);
+  const playerDuration = () => {
+    const text = document.body ? document.body.innerText || '' : '';
+    const m = text.match(/(?:^|[^\d:])\d{1,2}(?::\d{2}){1,2}\s*\/\s*(\d{1,2}(?::\d{2}){1,2})(?![\d:])/);
+    const clock = m ? clockSeconds(m[1]) : null;
+    const ranges = [...document.querySelectorAll('input[type=range]')]
+      .map((r) => ({ max: Number(r.max), step: Number(r.step) }))
+      .filter((r) => isNum(r.max) && r.max <= 36000);
+    if (isNum(clock)) {
+      const near = ranges.find((r) => Math.abs(r.max - clock) < 1);
+      return near ? near.max : clock;
+    }
+    const fine = ranges.find((r) => isNum(r.step) && r.step < 1 && Math.round(r.step) !== r.step);
+    return fine ? fine.max : null;
+  };
+
+  // Durée la plus longue des vidéos / sons de la page (une animation calée sur une bande son).
+  const mediaDuration = () => {
+    let d = 0;
+    for (const m of document.querySelectorAll('video, audio')) if (isNum(m.duration) && m.duration < 36000) d = Math.max(d, m.duration);
+    return d > 0 ? d : null;
   };
 
   let lastT = -1;
@@ -181,6 +215,44 @@
       await syncMedia(t);
       if (W.__rmWaitPaint !== false) await nextPaint();
       return now;
+    },
+    // Élément à cadrer : celui du sélecteur, ou (auto) le plus grand canvas / svg / vidéo / image / iframe
+    // visible, s'il occupe une bonne part de la fenêtre sans la remplir déjà. Renvoie sa position.
+    frameRect(selector) {
+      const vw = innerWidth, vh = innerHeight;
+      const visible = (el) => {
+        const st = getComputedStyle(el);
+        return st.display !== 'none' && st.visibility !== 'hidden' && Number(st.opacity) > 0;
+      };
+      const shown = (r) => Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0)) * Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+      let el = null;
+      if (selector) {
+        el = document.querySelector(selector);
+        if (!el) return { missing: true };
+      } else {
+        let best = 0;
+        for (const c of document.querySelectorAll('canvas, svg, video, img, iframe')) {
+          if (c.parentElement && c.parentElement.closest('svg')) continue; // svg imbriqué
+          if (!visible(c)) continue;
+          const a = shown(c.getBoundingClientRect());
+          if (a > best) { best = a; el = c; }
+        }
+        const cover = best / (vw * vh);
+        if (!el || cover < 0.4 || cover > 0.97) return null;
+      }
+      // Dans une vidéo plein cadre, les coins arrondis de l'élément laisseraient voir le fond de la page.
+      document.querySelectorAll('[data-rustmotion-frame]').forEach((e) => e.removeAttribute('data-rustmotion-frame'));
+      el.setAttribute('data-rustmotion-frame', '');
+      if (!document.getElementById('rustmotion-frame-style')) {
+        const st = document.createElement('style');
+        st.id = 'rustmotion-frame-style';
+        st.textContent = '[data-rustmotion-frame]{border-radius:0!important;outline:none!important}';
+        (document.head || document.documentElement).appendChild(st);
+      }
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return null;
+      const id = el.id ? '#' + el.id : (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/)[0] : '');
+      return { x: r.left + scrollX, y: r.top + scrollY, w: r.width, h: r.height, label: el.tagName.toLowerCase() + id };
     },
     // La page anime-t-elle quelque chose ? (cumulé depuis le chargement)
     isMotion() {
@@ -221,7 +293,9 @@
       }
       out.seekApi = !!pageSeek();
       out.isMotion = this.isMotion();
-      out.scriptDuration = (out.seekApi && ok(W.DURATION)) ? W.DURATION : null;
+      out.scriptDuration = scriptDuration();
+      out.playerDuration = playerDuration();
+      out.mediaDuration = mediaDuration();
       return out;
     },
   };

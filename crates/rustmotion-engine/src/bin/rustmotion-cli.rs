@@ -4,7 +4,7 @@ use std::io::Write;
 use std::sync::atomic::AtomicBool;
 
 use anyhow::{anyhow, bail, Result};
-use rustmotion_engine::types::{Codec, Lang, RenderSettings, Stage};
+use rustmotion_engine::types::{Codec, Framing, Lang, RenderSettings, Stage};
 use rustmotion_engine::{inspect_source, lang, probe, render, set_lang, tool_status, tr, Outcome};
 
 const HELP_FR: &str = "\
@@ -33,6 +33,8 @@ OPTIONS :
         --browser <chemin>   Navigateur Chromium à utiliser
         --ffmpeg <chemin>    ffmpeg à utiliser
         --lang <fr|en>       Langue des messages (défaut : langue du système)
+        --frame <c>          Cadrage : auto (élément principal, défaut), page,
+                             ou un sélecteur CSS (#stage, canvas…)
         --force              Exporte même si la page est refusée (fichiers manquants,
                              aucune animation détectée)
         --probe              Analyse la page sans rendre
@@ -66,6 +68,8 @@ OPTIONS:
         --browser <path>     Chromium browser to use
         --ffmpeg <path>      ffmpeg binary to use
         --lang <fr|en>       Message language (default: system language)
+        --frame <f>          Framing: auto (main element, default), page,
+                             or a CSS selector (#stage, canvas…)
         --force              Export even if the page is rejected (missing files,
                              no animation detected)
         --probe              Analyse the page without rendering
@@ -131,6 +135,7 @@ fn run() -> Result<()> {
             }
             "--probe" => probe_only = true,
             "--force" => force = true,
+            "--frame" => s.framing = Framing::parse(&val(&mut args, &a)?),
             "-o" | "--output" => s.output = val(&mut args, &a)?,
             "-w" | "--width" => s.width = num(val(&mut args, &a)?, &a)?,
             "-h" | "--height" => s.height = num(val(&mut args, &a)?, &a)?,
@@ -184,7 +189,7 @@ fn run() -> Result<()> {
     }
 
     eprint!("{}", tr!("analyse de la page… ", "analysing page… "));
-    let info = probe(&input, s.width, s.height, s.browser_path.as_deref())?;
+    let info = probe(&input, s.width, s.height, s.browser_path.as_deref(), &s.framing)?;
     eprintln!("ok");
     if probe_only {
         let mut v = serde_json::to_value(&info)?;
@@ -204,6 +209,15 @@ fn run() -> Result<()> {
             bail!("{} {}", r.message(l), tr!("(--force pour exporter quand même)", "(use --force to export anyway)"));
         }
         eprintln!("{} {}", r.message(l), tr!("Export forcé.", "Forced export."));
+    }
+    if let Some(f) = &info.frame {
+        eprintln!(
+            "{} : {} ({}×{})",
+            tr!("cadrage sur", "framed on"),
+            f.label,
+            s.width,
+            f.height_for(s.width)
+        );
     }
     if !duration_set {
         match (info.duration, info.duration_source) {
@@ -238,6 +252,10 @@ fn run() -> Result<()> {
     }
 
     let (w, h) = s.output_size();
+    let h = match &info.frame {
+        Some(f) => (f.height_for(s.width) as f64 * s.scale).round() as u32,
+        None => h,
+    };
     eprintln!(
         "{} {w}×{h} @ {} fps, {:.2} s ({} {}) -> {}",
         tr!("rendu", "rendering"),

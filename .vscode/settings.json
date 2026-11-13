@@ -1,0 +1,7 @@
+{
+  // Autorise VS Code à télécharger le schéma officiel de tauri.conf.json
+  // (autocomplétion et validation de src-tauri/tauri.conf.json).
+  "json.schemaDownload.trustedDomains": {
+    "https://schema.tauri.app/": true
+  }
+}

@@ -55,6 +55,20 @@ Paquet d'installation (MSI / NSIS sous Windows) :
 cd src-tauri && cargo tauri build
 ```
 
+### Exécutables Windows en local
+
+Le script [`scripts/build-windows.ps1`](scripts/build-windows.ps1) construit tout et le range dans
+`release\windows` : installateurs `.msi` et `-setup.exe`, exécutable portable (sans installation) et CLI en `.zip`.
+
+```powershell
+.\scripts\build-windows.ps1
+```
+
+Options : `-Portable` (exécutable seul, plus rapide), `-SkipCli`, `-Clean` (repart d'un frontend propre),
+`-OutDir <dossier>`. Aide complète : `Get-Help .\scripts\build-windows.ps1 -Detailed`.
+Fermez `cargo tauri dev` avant : les deux utilisent le même dossier `dist`.
+Si PowerShell refuse d'exécuter le script : `powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1`.
+
 ## CLI
 
 ```bash

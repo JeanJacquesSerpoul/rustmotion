@@ -133,11 +133,14 @@ fn fmt_secs(ms: u64) -> String {
     }
 }
 
-/// Construit l'onglet. `on_convert` reçoit le chemin du fichier HTML à convertir en vidéo.
+/// Construit l'onglet. `on_convert` reçoit le chemin du fichier HTML à convertir en vidéo ;
+/// `opened_html` reçoit le chemin d'un HTML ouvert dans l'onglet Conversion, affiché ici s'il
+/// s'agit d'un motion design.
 pub fn motion_tab(
     lang: RwSignal<Lang>,
     active: Signal<bool>,
     dropped_doc: RwSignal<Option<String>>,
+    opened_html: RwSignal<Option<String>>,
     on_convert: impl Fn(String) + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let in_tauri = tauri::available();
@@ -216,6 +219,63 @@ pub fn motion_tab(
             dropped_doc.set(None);
             load_file(p);
         }
+    });
+
+    // Motion design ouvert dans l'onglet Conversion : il devient l'animation affichée ici.
+    Effect::new(move |_| {
+        let Some(path) = opened_html.get() else { return };
+        opened_html.set(None);
+        if gen.get_untracked() == Gen::Running {
+            return;
+        }
+        // Déjà dans l'historique (par ex. envoyé d'ici via « Convertir en vidéo ») : on l'affiche.
+        if let Some(i) = versions.with_untracked(|vs| vs.iter().position(|v| v.path.as_deref() == Some(path.as_str()))) {
+            current.set(i);
+            return;
+        }
+        #[derive(Serialize)]
+        struct A {
+            path: String,
+        }
+        #[derive(Deserialize)]
+        struct Opened {
+            html: String,
+            title: Option<String>,
+            width: Option<u32>,
+            height: Option<u32>,
+            duration: Option<f64>,
+        }
+        spawn_local(async move {
+            let Ok(Some(o)) = invoke::<_, Option<Opened>>("open_motion", &A { path: path.clone() }).await else { return };
+            if gen.get_untracked() == Gen::Running {
+                return;
+            }
+            let (w, h, d) = (
+                o.width.unwrap_or_else(|| width.get_untracked()),
+                o.height.unwrap_or_else(|| height.get_untracked()),
+                o.duration.unwrap_or_else(|| duration.get_untracked()),
+            );
+            // Le format suit le fichier, pour que les ajustements ne le modifient pas par erreur.
+            width.set(w);
+            height.set(h);
+            duration.set(d);
+            // Nouvel historique : les ajustements partent de ce fichier, pas du brief précédent.
+            let name = o.title.unwrap_or_else(|| path.rsplit(['/', '\\']).next().unwrap_or_default().to_string());
+            versions.set(vec![Version {
+                html: o.html,
+                path: Some(path),
+                truncated: false,
+                model: None,
+                width: w,
+                height: h,
+                duration: d,
+                request: format!("Existing animation \"{name}\", opened from a file."),
+            }]);
+            current.set(0);
+            copy_status.set(None);
+            refine.set(String::new());
+            gen.set(Gen::Idle);
+        });
     });
 
     let pick_brief = move || {

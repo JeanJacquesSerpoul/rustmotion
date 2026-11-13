@@ -156,6 +156,8 @@ pub fn App() -> impl IntoView {
     let tab = RwSignal::new(Tab::Motion);
     // Brief (PDF / texte) déposé sur la fenêtre, transmis à l'onglet Motion design.
     let dropped_doc = RwSignal::new(None::<String>);
+    // HTML ouvert ici, transmis à l'onglet Motion design pour qu'il l'affiche aussi.
+    let opened_html = RwSignal::new(None::<String>);
 
     // --- Actions ------------------------------------------------------------
     let refresh_tools = move || {
@@ -271,6 +273,10 @@ pub fn App() -> impl IntoView {
 
     let set_input = move |path: String| {
         input.set(path.clone());
+        let lower = path.trim().trim_matches('"').to_ascii_lowercase();
+        if lower.ends_with(".html") || lower.ends_with(".htm") {
+            opened_html.set(Some(path.trim().trim_matches('"').to_string()));
+        }
         files.set(None);
         if !path.trim().is_empty() {
             #[derive(Serialize)]
@@ -508,6 +514,7 @@ pub fn App() -> impl IntoView {
                 lang,
                 Signal::derive(move || tab.get() == Tab::Motion),
                 dropped_doc,
+                opened_html,
                 move |path: String| {
                     tab.set(Tab::Convert);
                     // Pendant un rendu, la source ne change pas : on montre simplement l'onglet.

@@ -412,6 +412,73 @@ pub fn save_motion(app: AppHandle, html: String) -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
+/// Motion design lu sur disque, avec le format déclaré dans ses balises `rustmotion:`.
+#[derive(Serialize)]
+pub struct OpenedMotion {
+    html: String,
+    title: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    duration: Option<f64>,
+}
+
+/// Contenu de `<meta name="rustmotion:{key}" content="…">` (ordre des attributs indifférent).
+fn rustmotion_meta(html: &str, key: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let name = format!("rustmotion:{key}");
+    let mut from = 0;
+    while let Some(i) = lower[from..].find("<meta") {
+        let start = from + i;
+        let end = lower[start..].find('>').map_or(lower.len(), |e| start + e);
+        let tag = &lower[start..end];
+        from = end;
+        let named = ["\"", "'"].iter().any(|q| tag.contains(&format!("name={q}{name}{q}")));
+        if !named {
+            continue;
+        }
+        let c = tag.find("content=")? + "content=".len();
+        let quote = tag[c..].chars().next().filter(|q| *q == '"' || *q == '\'')?;
+        let v = c + 1;
+        let len = tag[v..].find(quote)?;
+        // Valeur reprise du document d'origine (les indices ASCII coïncident).
+        return Some(html[start + v..start + v + len].trim().to_string());
+    }
+    None
+}
+
+fn html_title(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let s = lower.find("<title>")? + "<title>".len();
+    let e = s + lower[s..].find("</title>")?;
+    Some(html[s..e].trim().to_string()).filter(|t| !t.is_empty())
+}
+
+/// Lit un fichier HTML ouvert dans l'onglet Conversion. Renvoie `None` si ce n'est pas un
+/// motion design (aucune balise `rustmotion:`), pour ne pas importer une page quelconque.
+#[tauri::command]
+pub async fn open_motion(path: String) -> Result<Option<OpenedMotion>, String> {
+    blocking(move || {
+        let p = PathBuf::from(path.trim().trim_matches('"'));
+        if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")) {
+            return Ok(None);
+        }
+        let size = std::fs::metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?.len();
+        if size > MAX_PROMPT_FILE {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let html = String::from_utf8_lossy(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).into_owned();
+        let num = |k: &str| rustmotion_meta(&html, k);
+        let (width, height) = (num("width").and_then(|v| v.parse().ok()), num("height").and_then(|v| v.parse().ok()));
+        let duration = num("duration").and_then(|v| v.parse().ok()).filter(|d: &f64| *d > 0.0);
+        if width.is_none() && height.is_none() && duration.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(OpenedMotion { title: html_title(&html), html, width, height, duration }))
+    })
+    .await
+}
+
 /// Enregistre une copie de l'animation à l'emplacement choisi par l'utilisateur.
 /// `current` (le fichier enregistré automatiquement) sert à proposer un nom et un dossier.
 /// Renvoie `None` si la boîte de dialogue est annulée.
@@ -465,6 +532,17 @@ mod tests {
         assert_eq!(extract_html(r).unwrap(), "<!DOCTYPE html><html><body>x</body></html>");
         assert_eq!(extract_html("<html><body>coupé").unwrap(), "<html><body>coupé");
         assert!(extract_html("pas de html").is_none());
+    }
+
+    #[test]
+    fn motion_meta() {
+        let h = r#"<head><META content="1080" name="rustmotion:height"><meta name='rustmotion:width' content='1920'>
+            <meta name="rustmotion:duration" content=" 8.5 "><title> Saut </title></head>"#;
+        assert_eq!(rustmotion_meta(h, "width").as_deref(), Some("1920"));
+        assert_eq!(rustmotion_meta(h, "height").as_deref(), Some("1080"));
+        assert_eq!(rustmotion_meta(h, "duration").as_deref(), Some("8.5"));
+        assert_eq!(rustmotion_meta(h, "fps"), None);
+        assert_eq!(html_title(h).as_deref(), Some("Saut"));
     }
 
     #[test]

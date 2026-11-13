@@ -11,6 +11,17 @@ identique d'un rendu à l'autre, même si la page est lourde ou la machine lente
 
 ## Fonctionnalités
 
+L'application a deux onglets :
+
+1. **Motion design** (optionnel) : un brief, saisi ou importé depuis un **PDF** ou un fichier **texte**, est envoyé à l'IA
+   via le [proxy OpenRouter](server/readme_openrouter.md). L'IA écrit une animation HTML au format et à la durée choisis,
+   prévisualisée aussitôt. On peut demander des ajustements (chaque version est conservée et enregistrée dans
+   `Vidéos/RustMotion`), puis l'envoyer d'un clic à l'onglet de conversion.
+2. **Conversion vidéo** : transforme n'importe quelle animation HTML en vidéo (détails ci-dessous).
+
+Le proxy est attendu par défaut sur `http://127.0.0.1:9018/v1` ; l'URL, la clé du proxy (`PROXY_API_KEYS`) et le modèle
+se règlent dans l'onglet et sont mémorisés. La clé OpenRouter reste sur le proxy.
+
 - Sources : fichier `.html`, dossier contenant `index.html`, ou URL `http(s)`.
   Les fichiers locaux sont servis par un petit serveur HTTP intégré : modules ES, `fetch()`, polices, JSON Lottie… fonctionnent.
 - Moteurs d'animation pris en charge : animations et transitions CSS, Web Animations API (y compris `await anim.finished`),

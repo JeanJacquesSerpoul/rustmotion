@@ -9,6 +9,8 @@ use rustmotion_types::{Codec, Framing, Lang, ProbeInfo, RenderSettings, SourceFi
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+mod ai;
+
 #[derive(Default)]
 struct AppState {
     cancel: Arc<AtomicBool>,
@@ -16,7 +18,7 @@ struct AppState {
 }
 
 /// Exécute un travail bloquant hors du thread principal.
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(f)
         .await
         .map_err(|e| tr!(format!("tâche interrompue : {e}"), format!("task aborted: {e}")))?
@@ -43,6 +45,9 @@ async fn pick_file(app: AppHandle, kind: String) -> Result<Option<String>, Strin
         "audio" => d
             .set_title(tr!("Choisir une piste audio", "Choose an audio track"))
             .add_filter("Audio", &["mp3", "wav", "aac", "m4a", "ogg", "flac", "opus"]),
+        "prompt" => d
+            .set_title(tr!("Choisir un brief (PDF ou texte)", "Choose a brief (PDF or text)"))
+            .add_filter(tr!("PDF ou texte", "PDF or text"), &["pdf", "txt", "md", "markdown", "text"]),
         "exe" => d
             .set_title(tr!("Choisir un exécutable", "Choose an executable"))
             .add_filter(tr!("Exécutable", "Executable"), &["exe", ""]),
@@ -184,7 +189,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
+        .manage(ai::AiState::default())
         .invoke_handler(tauri::generate_handler![
+            ai::ai_generate,
+            ai::ai_cancel,
+            ai::ai_models,
+            ai::read_prompt_file,
+            ai::save_motion,
             set_lang,
             tool_status,
             pick_file,
@@ -202,6 +213,7 @@ pub fn run() {
             // Fermer la fenêtre annule un rendu en cours (le navigateur et ffmpeg sont arrêtés).
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 window.state::<AppState>().cancel.store(true, Ordering::SeqCst);
+                ai::ai_cancel(window.state::<ai::AiState>());
             }
         })
         .run(tauri::generate_context!())

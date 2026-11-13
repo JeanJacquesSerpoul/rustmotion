@@ -23,7 +23,13 @@ struct DragDrop {
     paths: Vec<String>,
 }
 
-const PRESETS: [(&str, u32, u32); 6] = [
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    Motion,
+    Convert,
+}
+
+pub(crate) const PRESETS: [(&str, u32, u32); 6] = [
     ("1080p", 1920, 1080),
     ("720p", 1280, 720),
     ("4K", 3840, 2160),
@@ -147,6 +153,9 @@ pub fn App() -> impl IntoView {
     let progress = RwSignal::new(None::<Progress>);
     let preview = RwSignal::new(None::<String>);
     let dragging = RwSignal::new(false);
+    let tab = RwSignal::new(Tab::Motion);
+    // Brief (PDF / texte) déposé sur la fenêtre, transmis à l'onglet Motion design.
+    let dropped_doc = RwSignal::new(None::<String>);
 
     // --- Actions ------------------------------------------------------------
     let refresh_tools = move || {
@@ -403,11 +412,18 @@ pub fn App() -> impl IntoView {
         });
         tauri::listen::<DragDrop>("tauri://drag-drop", move |d| {
             dragging.set(false);
-            if phase.get_untracked() == Phase::Rendering {
-                return;
-            }
             if let Some(p) = d.paths.into_iter().next() {
                 let lower = p.to_ascii_lowercase();
+                let is_doc = [".pdf", ".txt", ".md", ".markdown"].iter().any(|e| lower.ends_with(e));
+                if is_doc {
+                    tab.set(Tab::Motion);
+                    dropped_doc.set(Some(p));
+                    return;
+                }
+                if phase.get_untracked() == Phase::Rendering {
+                    return;
+                }
+                tab.set(Tab::Convert);
                 let is_audio = [".mp3", ".wav", ".aac", ".m4a", ".ogg", ".flac", ".opus"]
                     .iter()
                     .any(|e| lower.ends_with(e));
@@ -450,6 +466,18 @@ pub fn App() -> impl IntoView {
                         <p>{move || t().tagline}</p>
                     </div>
                 </div>
+                <nav class="tabs" role="tablist">
+                    {[(Tab::Motion, "1"), (Tab::Convert, "2")].into_iter().map(|(tb, n)| view! {
+                        <button role="tab" class:active=move || tab.get() == tb aria-selected=move || (tab.get() == tb).to_string()
+                            on:click=move |_| tab.set(tb)>
+                            <span class="tab-n">{n}</span>
+                            {move || {
+                                let m = i18n::motion_texts(lang.get());
+                                if tb == Tab::Motion { m.tab_motion } else { m.tab_convert }
+                            }}
+                        </button>
+                    }).collect_view()}
+                </nav>
                 <div class="tools">
                     <div class="lang" role="group" title=move || t().lang_title>
                         {Lang::ALL.into_iter().map(|l| view! {
@@ -476,7 +504,20 @@ pub fn App() -> impl IntoView {
                 </div>
             </header>
 
-            <main class="grid">
+            {crate::motion::motion_tab(
+                lang,
+                Signal::derive(move || tab.get() == Tab::Motion),
+                dropped_doc,
+                move |path: String| {
+                    tab.set(Tab::Convert);
+                    // Pendant un rendu, la source ne change pas : on montre simplement l'onglet.
+                    if phase.get_untracked() != Phase::Rendering {
+                        set_input(path);
+                    }
+                },
+            )}
+
+            <main class="grid" class:hidden=move || tab.get() != Tab::Convert>
                 <section class="col settings">
                     // ---------------- Source
                     <div class="card">

@@ -1,0 +1,460 @@
+//! Motion design par IA : appel du proxy OpenRouter (API compatible OpenAI, en streaming),
+//! lecture d'un brief (.txt / .md / .pdf) et enregistrement de l'animation HTML produite.
+
+use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use rustmotion_engine::tr;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::blocking;
+
+/// Taille maximale d'un brief importé.
+const MAX_PROMPT_FILE: u64 = 50 * 1024 * 1024;
+
+#[derive(Default)]
+pub struct AiState {
+    cancel: Arc<AtomicBool>,
+    busy: Arc<AtomicBool>,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+pub struct AiRequest {
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+    messages: Vec<ChatMessage>,
+}
+
+#[derive(Serialize, Clone)]
+struct AiProgress {
+    /// Caractères de réponse reçus.
+    chars: usize,
+    /// Caractères de « réflexion » reçus (modèles qui raisonnent avant de répondre).
+    reasoning: usize,
+    /// Fin de la réponse reçue, pour l'afficher en direct.
+    tail: String,
+    elapsed_ms: u64,
+}
+
+#[derive(Serialize)]
+pub struct AiResult {
+    html: String,
+    /// La réponse a été coupée (limite de jetons atteinte) : l'animation est probablement incomplète.
+    truncated: bool,
+    model: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PromptFile {
+    name: String,
+    text: String,
+}
+
+/// Racine de l'API (`…/v1`) à partir de l'URL saisie.
+fn api_base(base: &str) -> String {
+    let base = base.trim().trim_end_matches('/');
+    let base = base.strip_suffix("/chat/completions").unwrap_or(base);
+    if base.ends_with("/v1") {
+        base.to_string()
+    } else {
+        format!("{base}/v1")
+    }
+}
+
+/// URL complète de `/chat/completions`.
+fn endpoint(base: &str) -> String {
+    format!("{}/chat/completions", api_base(base))
+}
+
+/// Modèles proposés par le proxy (vide si la route `/models` n'est pas autorisée).
+#[tauri::command]
+pub async fn ai_models(base_url: String, api_key: Option<String>) -> Result<Vec<String>, String> {
+    blocking(move || {
+        let url = format!("{}/models", api_base(&base_url));
+        let mut call = ureq::get(&url).timeout(Duration::from_secs(15));
+        if let Some(key) = api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+            call = call.set("Authorization", &format!("Bearer {key}"));
+        }
+        let text = call.call().map_err(|e| http_error(&url, e))?.into_string().map_err(|e| e.to_string())?;
+        let v: Value =
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", tr!("réponse illisible", "unreadable response")))?;
+        let mut ids: Vec<String> = v["data"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        ids.sort();
+        Ok(ids)
+    })
+    .await
+}
+
+/// Isole le document HTML dans la réponse (ignore les balises ``` et le texte autour).
+fn extract_html(s: &str) -> Option<String> {
+    let lower = s.to_ascii_lowercase();
+    let start = lower.find("<!doctype").or_else(|| lower.find("<html"))?;
+    let end = lower.rfind("</html>").map(|i| i + "</html>".len()).filter(|&e| e > start).unwrap_or(s.len());
+    Some(s[start..end].trim().to_string())
+}
+
+fn tail(s: &str, n: usize) -> String {
+    let count = s.chars().count();
+    s.chars().skip(count.saturating_sub(n)).collect()
+}
+
+fn api_error(v: &Value) -> Option<String> {
+    let e = v.get("error")?;
+    Some(e.get("message").and_then(Value::as_str).map(String::from).unwrap_or_else(|| e.to_string()))
+}
+
+fn http_error(url: &str, err: ureq::Error) -> String {
+    match err {
+        ureq::Error::Status(code, resp) => {
+            let body = resp.into_string().unwrap_or_default();
+            let detail = serde_json::from_str::<Value>(&body).ok().and_then(|v| api_error(&v)).unwrap_or(body);
+            let hint = match code {
+                401 => tr!("clé du proxy absente ou refusée", "proxy key missing or rejected"),
+                402 => tr!("crédit OpenRouter insuffisant", "insufficient OpenRouter credit"),
+                403 => tr!("route refusée par le proxy", "route refused by the proxy"),
+                404 => tr!("route ou modèle introuvable", "route or model not found"),
+                408 | 504 => tr!("délai dépassé", "timed out"),
+                413 => tr!("requête trop volumineuse (brief trop long ?)", "request too large (brief too long?)"),
+                429 => tr!("trop de requêtes, réessayez plus tard", "too many requests, try again later"),
+                _ => "",
+            };
+            let mut msg = format!("HTTP {code}");
+            if !hint.is_empty() {
+                msg.push_str(&format!(" — {hint}"));
+            }
+            if !detail.trim().is_empty() {
+                msg.push_str(&format!("\n{}", detail.trim()));
+            }
+            msg
+        }
+        ureq::Error::Transport(t) => format!(
+            "{} {url}\n{t}",
+            tr!("Proxy IA injoignable :", "AI proxy unreachable:")
+        ),
+    }
+}
+
+/// Envoie la conversation au proxy et renvoie le document HTML produit (`None` si annulé).
+#[tauri::command]
+pub async fn ai_generate(app: AppHandle, state: State<'_, AiState>, req: AiRequest) -> Result<Option<AiResult>, String> {
+    if req.model.trim().is_empty() {
+        return Err(tr!("choisissez un modèle", "choose a model").into());
+    }
+    if state.busy.swap(true, Ordering::SeqCst) {
+        return Err(tr!("une génération est déjà en cours", "a generation is already running").into());
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    let cancel = state.cancel.clone();
+    let busy = state.busy.clone();
+    let res = blocking(move || {
+        generate(&req, &cancel, |p| {
+            let _ = app.emit("ai-progress", p);
+        })
+    })
+    .await;
+    busy.store(false, Ordering::SeqCst);
+    res
+}
+
+fn generate(req: &AiRequest, cancel: &AtomicBool, mut on_progress: impl FnMut(AiProgress)) -> Result<Option<AiResult>, String> {
+    let url = endpoint(&req.base_url);
+    let body = json!({
+        "model": req.model.trim(),
+        "messages": req.messages,
+        "stream": true,
+    });
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(20))
+        // Délai entre deux paquets : un modèle peut réfléchir longtemps avant d'écrire.
+        .timeout_read(Duration::from_secs(600))
+        .build();
+    let mut call = agent.post(&url).set("Content-Type", "application/json").set("Accept", "text/event-stream");
+    if let Some(key) = req.api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        call = call.set("Authorization", &format!("Bearer {key}"));
+    }
+    let t0 = Instant::now();
+    let resp = call.send_string(&body.to_string()).map_err(|e| http_error(&url, e))?;
+    if cancel.load(Ordering::SeqCst) {
+        return Ok(None);
+    }
+
+    let streamed = resp.content_type().contains("event-stream");
+    let mut content = String::new();
+    let mut model = None;
+    let mut finish = None::<String>;
+
+    if streamed {
+        let mut reasoning = 0usize;
+        let mut last_emit = Instant::now() - Duration::from_secs(1);
+        let reader = BufReader::new(resp.into_reader());
+        for line in reader.lines() {
+            if cancel.load(Ordering::SeqCst) {
+                return Ok(None);
+            }
+            let line = line.map_err(|e| format!("{}: {e}", tr!("flux interrompu", "stream interrupted")))?;
+            let Some(data) = line.strip_prefix("data:") else { continue };
+            let data = data.trim();
+            if data == "[DONE]" {
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+            if let Some(e) = api_error(&v) {
+                return Err(e);
+            }
+            if model.is_none() {
+                model = v.get("model").and_then(Value::as_str).map(String::from);
+            }
+            let choice = &v["choices"][0];
+            if let Some(s) = choice["delta"]["content"].as_str() {
+                content.push_str(s);
+            }
+            if let Some(s) = choice["delta"]["reasoning"].as_str() {
+                reasoning += s.chars().count();
+            }
+            if let Some(f) = choice["finish_reason"].as_str() {
+                finish = Some(f.to_string());
+            }
+            if last_emit.elapsed() >= Duration::from_millis(150) {
+                last_emit = Instant::now();
+                on_progress(AiProgress {
+                    chars: content.chars().count(),
+                    reasoning,
+                    tail: tail(&content, 1200),
+                    elapsed_ms: t0.elapsed().as_millis() as u64,
+                });
+            }
+        }
+    } else {
+        // Proxy ou modèle sans streaming : réponse JSON complète.
+        let mut text = String::new();
+        resp.into_reader().read_to_string(&mut text).map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", tr!("réponse illisible", "unreadable response")))?;
+        if let Some(e) = api_error(&v) {
+            return Err(e);
+        }
+        model = v.get("model").and_then(Value::as_str).map(String::from);
+        content = v["choices"][0]["message"]["content"].as_str().unwrap_or_default().to_string();
+        finish = v["choices"][0]["finish_reason"].as_str().map(String::from);
+    }
+
+    if content.trim().is_empty() {
+        return Err(tr!("le modèle n'a renvoyé aucun contenu", "the model returned no content").into());
+    }
+    let html = extract_html(&content).ok_or_else(|| {
+        format!(
+            "{}\n\n{}",
+            tr!("la réponse ne contient pas de document HTML :", "the response contains no HTML document:"),
+            tail(&content, 600)
+        )
+    })?;
+    let truncated = finish.as_deref() == Some("length") || !html.to_ascii_lowercase().contains("</html>");
+    Ok(Some(AiResult { html, truncated, model }))
+}
+
+#[tauri::command]
+pub fn ai_cancel(state: State<'_, AiState>) {
+    state.cancel.store(true, Ordering::SeqCst);
+}
+
+/// Lit un brief : texte brut (.txt, .md…) ou texte extrait d'un PDF.
+#[tauri::command]
+pub async fn read_prompt_file(path: String) -> Result<PromptFile, String> {
+    blocking(move || {
+        let p = PathBuf::from(path.trim().trim_matches('"'));
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let size = std::fs::metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?.len();
+        if size > MAX_PROMPT_FILE {
+            return Err(tr!("fichier trop volumineux (50 Mo max)", "file too large (50 MB max)").into());
+        }
+        let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let is_pdf = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) || bytes.starts_with(b"%PDF");
+        let text = if is_pdf {
+            // Certaines bibliothèques PDF paniquent sur des fichiers atypiques : on isole l'extraction.
+            let out = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(&bytes));
+            match out {
+                Ok(Ok(t)) => t,
+                Ok(Err(e)) => return Err(format!("{}: {e}", tr!("lecture du PDF impossible", "cannot read the PDF"))),
+                Err(_) => return Err(tr!("lecture du PDF impossible (format non pris en charge)", "cannot read the PDF (unsupported format)").into()),
+            }
+        } else {
+            String::from_utf8_lossy(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).into_owned()
+        };
+        let text = tidy(&text);
+        if text.is_empty() {
+            return Err(if is_pdf {
+                tr!("aucun texte extractible (PDF scanné ?)", "no extractable text (scanned PDF?)")
+            } else {
+                tr!("le fichier est vide", "the file is empty")
+            }
+            .into());
+        }
+        Ok(PromptFile { name, text })
+    })
+    .await
+}
+
+/// Normalise les fins de ligne et réduit les longues suites de lignes vides.
+fn tidy(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut blank = 0;
+    for line in s.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        let line = line.trim_end();
+        if line.trim().is_empty() {
+            blank += 1;
+            if blank > 1 {
+                continue;
+            }
+        } else {
+            blank = 0;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim().to_string()
+}
+
+/// Nom de fichier tiré du `<title>` du document.
+fn slug_from_title(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let title = lower
+        .find("<title>")
+        .map(|i| i + "<title>".len())
+        .and_then(|s| lower[s..].find("</title>").map(|e| &html[s..s + e]))
+        .unwrap_or("");
+    let mut slug = String::new();
+    for c in title.to_lowercase().chars() {
+        let c = match c {
+            'à' | 'â' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'î' | 'ï' => 'i',
+            'ô' | 'ö' => 'o',
+            'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            c => c,
+        };
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else if !slug.ends_with('-') && !slug.is_empty() {
+            slug.push('-');
+        }
+        if slug.len() >= 48 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        "motion".into()
+    } else {
+        slug
+    }
+}
+
+fn motion_dir(app: &AppHandle) -> PathBuf {
+    let base = app
+        .path()
+        .video_dir()
+        .or_else(|_| app.path().document_dir())
+        .unwrap_or_else(|_| std::env::temp_dir());
+    base.join("RustMotion")
+}
+
+fn unique_path(dir: &Path, stem: &str) -> PathBuf {
+    let mut candidate = dir.join(format!("{stem}.html"));
+    let mut n = 2;
+    while candidate.exists() {
+        candidate = dir.join(format!("{stem}-{n}.html"));
+        n += 1;
+    }
+    candidate
+}
+
+/// Enregistre l'animation générée (chaque version dans un nouveau fichier) et renvoie son chemin.
+#[tauri::command]
+pub fn save_motion(app: AppHandle, html: String) -> Result<String, String> {
+    let dir = motion_dir(&app);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = unique_path(&dir, &slug_from_title(&html));
+    std::fs::write(&path, html).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoints() {
+        assert_eq!(endpoint("http://127.0.0.1:9018/v1"), "http://127.0.0.1:9018/v1/chat/completions");
+        assert_eq!(endpoint("http://127.0.0.1:9018/"), "http://127.0.0.1:9018/v1/chat/completions");
+        assert_eq!(endpoint("https://x.fr/openrouter/v1/"), "https://x.fr/openrouter/v1/chat/completions");
+        assert_eq!(endpoint("https://x.fr/v1/chat/completions"), "https://x.fr/v1/chat/completions");
+    }
+
+    #[test]
+    fn html_extraction() {
+        let r = "Voici :\n```html\n<!DOCTYPE html><html><body>x</body></html>\n```\nBonne journée";
+        assert_eq!(extract_html(r).unwrap(), "<!DOCTYPE html><html><body>x</body></html>");
+        assert_eq!(extract_html("<html><body>coupé").unwrap(), "<html><body>coupé");
+        assert!(extract_html("pas de html").is_none());
+    }
+
+    #[test]
+    fn slugs() {
+        assert_eq!(slug_from_title("<title>Lancement Été 2026 !</title>"), "lancement-ete-2026");
+        assert_eq!(slug_from_title("<html></html>"), "motion");
+    }
+
+    /// Essai réel via le proxy : `RM_AI_OUT=chemin.html cargo test -p rustmotion --lib live -- --ignored --nocapture`
+    /// (optionnel : RM_AI_URL, RM_AI_MODEL, RM_AI_KEY, RM_AI_BRIEF).
+    #[test]
+    #[ignore]
+    fn live_generation() {
+        use rustmotion_types::motion::{brief_message, system_prompt};
+        let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+        let brief = env(
+            "RM_AI_BRIEF",
+            "Annonce de lancement de « RustMotion 0.3 » : nouvel onglet Motion design. Ton premium, sombre, accent doré. Trois messages : le titre, « Du brief à la vidéo », « Généré par IA, rendu image par image ».",
+        );
+        let req = AiRequest {
+            base_url: env("RM_AI_URL", "http://127.0.0.1:9018/v1"),
+            api_key: std::env::var("RM_AI_KEY").ok(),
+            model: env("RM_AI_MODEL", "anthropic/claude-sonnet-5.5"),
+            messages: vec![
+                ChatMessage { role: "system".into(), content: system_prompt(1280, 720, 6.0) },
+                ChatMessage { role: "user".into(), content: brief_message(&brief) },
+            ],
+        };
+        let mut last = 0;
+        let r = generate(&req, &AtomicBool::new(false), |p| {
+            if p.chars / 2000 != last {
+                last = p.chars / 2000;
+                eprintln!("{} caractères, {} ms", p.chars, p.elapsed_ms);
+            }
+        })
+        .expect("génération")
+        .expect("non annulée");
+        eprintln!("modèle : {:?}, tronqué : {}", r.model, r.truncated);
+        assert!(r.html.to_ascii_lowercase().contains("rustmotion:duration"));
+        std::fs::write(env("RM_AI_OUT", "motion-live.html"), &r.html).unwrap();
+    }
+
+    #[test]
+    fn tidy_text() {
+        assert_eq!(tidy("a\r\n\r\n\r\n\r\nb  \n"), "a\n\nb");
+    }
+}

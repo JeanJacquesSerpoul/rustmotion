@@ -236,6 +236,202 @@ pub static EN: Texts = Texts {
     drop_overlay: "Drop to load",
 };
 
+/// Textes de l'onglet « Motion design » et des onglets.
+pub struct MotionTexts {
+    pub tab_motion: &'static str,
+    pub tab_convert: &'static str,
+    pub brief: &'static str,
+    pub brief_placeholder: &'static str,
+    pub btn_import: &'static str,
+    pub reading: &'static str,
+    pub import_hint: &'static str,
+    pub clear: &'static str,
+    pub format: &'static str,
+    pub width: &'static str,
+    pub height: &'static str,
+    pub duration_s: &'static str,
+    pub ai: &'static str,
+    pub ai_model: &'static str,
+    pub models_loading: &'static str,
+    pub models_unavailable: &'static str,
+    pub outside_tauri: &'static str,
+    pub proxy_show: &'static str,
+    pub proxy_hide: &'static str,
+    pub ai_url: &'static str,
+    pub ai_key: &'static str,
+    pub ai_key_placeholder: &'static str,
+    pub proxy_hint: &'static str,
+    pub waiting: &'static str,
+    pub thinking: &'static str,
+    pub preview: &'static str,
+    pub preview_empty: &'static str,
+    pub replay: &'static str,
+    pub cancel: &'static str,
+    pub failed: &'static str,
+    pub cancelled: &'static str,
+    pub generate: &'static str,
+    pub need_brief: &'static str,
+    pub need_model: &'static str,
+    pub ready_hint: &'static str,
+    pub truncated: &'static str,
+    pub saved: &'static str,
+    pub save_failed: &'static str,
+    pub convert: &'static str,
+    pub open_browser: &'static str,
+    pub reveal: &'static str,
+    pub refine: &'static str,
+    pub refine_placeholder: &'static str,
+    pub refine_btn: &'static str,
+    pub regenerate: &'static str,
+    pub regenerate_title: &'static str,
+}
+
+pub static MOTION_FR: MotionTexts = MotionTexts {
+    tab_motion: "Motion design",
+    tab_convert: "Conversion vidéo",
+    brief: "Brief",
+    brief_placeholder: "Décrivez l'animation : message, ambiance, couleurs, rythme, scènes…\nOu importez un PDF / un fichier texte.",
+    btn_import: "Importer PDF / TXT…",
+    reading: "Lecture du fichier…",
+    import_hint: "Vous pouvez aussi déposer un PDF ou un .txt sur la fenêtre.",
+    clear: "Effacer",
+    format: "Format",
+    width: "Largeur",
+    height: "Hauteur",
+    duration_s: "Durée (s)",
+    ai: "Modèle IA",
+    ai_model: "Modèle (identifiant OpenRouter)",
+    models_loading: "Interrogation du proxy…",
+    models_unavailable: "Liste des modèles indisponible : saisissez l'identifiant (ex. anthropic/claude-sonnet-5.5).",
+    outside_tauri: "Disponible uniquement dans l'application.",
+    proxy_show: "▸ Proxy IA",
+    proxy_hide: "▾ Proxy IA",
+    ai_url: "URL du proxy OpenRouter",
+    ai_key: "Clé du proxy (PROXY_API_KEYS)",
+    ai_key_placeholder: "Vide si le proxy n'en exige pas",
+    proxy_hint: "La clé OpenRouter reste sur le proxy. Ces réglages sont mémorisés sur ce poste.",
+    waiting: "Envoi du brief…",
+    thinking: "Le modèle réfléchit…",
+    preview: "Aperçu du motion design",
+    preview_empty: "L'animation générée s'affichera ici",
+    replay: "↻ Rejouer",
+    cancel: "Annuler",
+    failed: "Échec de la génération",
+    cancelled: "Génération annulée",
+    generate: "Générer le motion design",
+    need_brief: "Rédigez ou importez d'abord un brief.",
+    need_model: "Indiquez un modèle IA.",
+    ready_hint: "Le brief est envoyé à l'IA, qui écrit une animation HTML convertible en vidéo.",
+    truncated: "Réponse coupée par la limite du modèle : l'animation est peut-être incomplète.",
+    saved: "Animation enregistrée ✔",
+    save_failed: "Enregistrement impossible",
+    convert: "Convertir en vidéo →",
+    open_browser: "Ouvrir dans le navigateur",
+    reveal: "Afficher dans le dossier",
+    refine: "Ajustements (optionnel)",
+    refine_placeholder: "Ex. : titre plus grand, fond bleu nuit, transition plus lente à la fin…",
+    refine_btn: "Appliquer les ajustements",
+    regenerate: "Régénérer",
+    regenerate_title: "Nouvelle génération à partir du brief seul",
+};
+
+pub static MOTION_EN: MotionTexts = MotionTexts {
+    tab_motion: "Motion design",
+    tab_convert: "Video conversion",
+    brief: "Brief",
+    brief_placeholder: "Describe the animation: message, mood, colours, pace, scenes…\nOr import a PDF / text file.",
+    btn_import: "Import PDF / TXT…",
+    reading: "Reading file…",
+    import_hint: "You can also drop a PDF or a .txt onto the window.",
+    clear: "Clear",
+    format: "Format",
+    width: "Width",
+    height: "Height",
+    duration_s: "Duration (s)",
+    ai: "AI model",
+    ai_model: "Model (OpenRouter id)",
+    models_loading: "Querying the proxy…",
+    models_unavailable: "Model list unavailable: type the id (e.g. anthropic/claude-sonnet-5.5).",
+    outside_tauri: "Only available in the app.",
+    proxy_show: "▸ AI proxy",
+    proxy_hide: "▾ AI proxy",
+    ai_url: "OpenRouter proxy URL",
+    ai_key: "Proxy key (PROXY_API_KEYS)",
+    ai_key_placeholder: "Empty if the proxy doesn't require one",
+    proxy_hint: "The OpenRouter key stays on the proxy. These settings are remembered on this computer.",
+    waiting: "Sending the brief…",
+    thinking: "The model is thinking…",
+    preview: "Motion design preview",
+    preview_empty: "The generated animation will appear here",
+    replay: "↻ Replay",
+    cancel: "Cancel",
+    failed: "Generation failed",
+    cancelled: "Generation cancelled",
+    generate: "Generate the motion design",
+    need_brief: "Write or import a brief first.",
+    need_model: "Enter an AI model.",
+    ready_hint: "The brief is sent to the AI, which writes an HTML animation ready to convert to video.",
+    truncated: "Response cut off by the model's limit: the animation may be incomplete.",
+    saved: "Animation saved ✔",
+    save_failed: "Could not save",
+    convert: "Convert to video →",
+    open_browser: "Open in browser",
+    reveal: "Show in folder",
+    refine: "Adjustments (optional)",
+    refine_placeholder: "E.g. bigger title, midnight blue background, slower final transition…",
+    refine_btn: "Apply adjustments",
+    regenerate: "Regenerate",
+    regenerate_title: "New generation from the brief alone",
+};
+
+pub fn motion_texts(lang: Lang) -> &'static MotionTexts {
+    match lang {
+        Lang::Fr => &MOTION_FR,
+        Lang::En => &MOTION_EN,
+    }
+}
+
+/// Nombre avec espaces de milliers (« 12 345 »).
+fn thousands(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push('\u{202f}');
+        }
+        out.push(c);
+    }
+    out
+}
+
+pub fn chars(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Fr => format!("{} caractère{}", thousands(n), if n > 1 { "s" } else { "" }),
+        Lang::En => format!("{} character{}", thousands(n), if n == 1 { "" } else { "s" }),
+    }
+}
+
+pub fn models_found(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Fr => format!("{n} modèles proposés par le proxy (saisissez pour filtrer)."),
+        Lang::En => format!("{n} models offered by the proxy (type to filter)."),
+    }
+}
+
+pub fn writing(lang: Lang, n: usize) -> String {
+    match lang {
+        Lang::Fr => format!("Écriture de l'animation… {}", chars(lang, n)),
+        Lang::En => format!("Writing the animation… {}", chars(lang, n)),
+    }
+}
+
+pub fn version_of(lang: Lang, i: usize, n: usize) -> String {
+    match lang {
+        Lang::Fr => format!("Version {i} / {n}"),
+        Lang::En => format!("Version {i} / {n}"),
+    }
+}
+
 pub fn texts(lang: Lang) -> &'static Texts {
     match lang {
         Lang::Fr => &FR,

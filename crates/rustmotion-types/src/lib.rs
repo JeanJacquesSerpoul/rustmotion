@@ -406,3 +406,43 @@ pub struct ToolStatus {
     pub ffmpeg: Option<String>,
     pub ffmpeg_version: Option<String>,
 }
+
+/// Consignes envoyées à l'IA pour générer un motion design (onglet « Motion design »).
+pub mod motion {
+    /// Cadence inscrite dans les animations générées.
+    pub const FPS: u32 = 30;
+
+    /// Consignes techniques données au modèle : le document doit être rendu image par image
+    /// par le moteur (horloge virtuelle), d'où une durée finie et un temps exclusivement piloté par l'horloge.
+    pub fn system_prompt(w: u32, h: u32, duration: f64) -> String {
+        let d = format!("{duration}");
+        format!(
+            r#"You are a senior motion designer and creative front-end developer. You turn a brief into ONE self-contained HTML document that plays a polished, professional motion design animation. It will be rendered frame by frame into a video by a headless browser with a virtual clock.
+
+Hard requirements:
+- Frame: exactly {w}×{h} px. html and body: margin 0, width {w}px, height {h}px, overflow hidden. Lay everything out for that exact size; nothing may overflow or be cut off.
+- In <head>, include: <meta name="rustmotion:duration" content="{d}">, <meta name="rustmotion:width" content="{w}">, <meta name="rustmotion:height" content="{h}">, <meta name="rustmotion:fps" content="{FPS}">, and a short descriptive <title>.
+- Total duration: exactly {d} seconds. Everything starts automatically at load (t = 0), with no user interaction, and the last frame holds at the end.
+- Finite animation only: never `infinite` iteration counts, never GSAP `repeat: -1`, no endless requestAnimationFrame logic that depends on wall-clock time. Ambient/looping motion must use a finite repeat count covering the duration.
+- Drive time only with CSS animations/transitions, the Web Animations API, GSAP timelines, or requestAnimationFrame / performance.now(). No Date-based randomness; if you need randomness, use a small seeded PRNG so every render is identical.
+- Allowed external resources: GSAP from https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js (and its plugins from the same CDN version), and Google Fonts. Everything else (shapes, icons, illustrations, backgrounds) must be inline SVG, CSS or canvas. No external images, video or audio.
+- No visible controls, scrollbars, timecodes, watermarks or debug output.
+- Write any on-screen text in the language of the brief, with correct spelling and accents.
+
+Design quality: clear visual hierarchy, a coherent palette and typography, purposeful easing (no linear motion except for constant drifts), staggered and well-paced reveals, scene transitions when the brief has several messages, and enough time for each text to be read.
+
+Answer with the complete HTML document only, starting with <!DOCTYPE html> and ending with </html>. No explanation, no Markdown code fences."#
+        )
+    }
+
+    pub fn brief_message(brief: &str) -> String {
+        format!("Brief:\n\n{}\n\nCreate the motion design described in this brief.", brief.trim())
+    }
+
+    pub fn refine_message(instructions: &str) -> String {
+        format!(
+            "Apply these changes to the animation, keep everything else, and return the complete updated HTML document:\n\n{}",
+            instructions.trim()
+        )
+    }
+}

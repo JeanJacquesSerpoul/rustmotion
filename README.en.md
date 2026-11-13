@@ -11,6 +11,17 @@ identical from one render to the next, even when the page is heavy or the machin
 
 ## Features
 
+The app has two tabs:
+
+1. **Motion design** (optional): a brief, typed or imported from a **PDF** or a **text** file, is sent to the AI
+   through the [OpenRouter proxy](server/readme_openrouter.md). The AI writes an HTML animation at the chosen format and
+   duration, previewed right away. You can ask for adjustments (every version is kept and saved in `Videos/RustMotion`),
+   then send it to the conversion tab in one click.
+2. **Video conversion**: turns any HTML animation into a video (details below).
+
+The proxy is expected at `http://127.0.0.1:9018/v1` by default; the URL, the proxy key (`PROXY_API_KEYS`) and the model
+are set in the tab and remembered. The OpenRouter key stays on the proxy.
+
 - Inputs: an `.html` file, a folder containing `index.html`, or an `http(s)` URL.
   Local files are served by a small built-in HTTP server, so ES modules, `fetch()`, fonts, Lottie JSON… all work.
 - Supported animation engines: CSS animations and transitions, the Web Animations API (including `await anim.finished`),

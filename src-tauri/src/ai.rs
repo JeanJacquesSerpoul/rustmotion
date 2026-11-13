@@ -80,7 +80,7 @@ fn endpoint(base: &str) -> String {
 
 /// Modèles proposés par le proxy (vide si la route `/models` n'est pas autorisée).
 #[tauri::command]
-pub async fn ai_models(base_url: String, api_key: Option<String>) -> Result<Vec<String>, String> {
+pub async fn ai_models(base_url: String, api_key: Option<String>) -> Result<Vec<ModelInfo>, String> {
     blocking(move || {
         let url = format!("{}/models", api_base(&base_url));
         let mut call = ureq::get(&url).timeout(Duration::from_secs(15));
@@ -90,14 +90,31 @@ pub async fn ai_models(base_url: String, api_key: Option<String>) -> Result<Vec<
         let text = call.call().map_err(|e| http_error(&url, e))?.into_string().map_err(|e| e.to_string())?;
         let v: Value =
             serde_json::from_str(&text).map_err(|e| format!("{}: {e}", tr!("réponse illisible", "unreadable response")))?;
-        let mut ids: Vec<String> = v["data"]
+        let mut models: Vec<ModelInfo> = v["data"]
             .as_array()
-            .map(|a| a.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
+            .map(|a| a.iter().filter_map(model_info).collect())
             .unwrap_or_default();
-        ids.sort();
-        Ok(ids)
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(models)
     })
     .await
+}
+
+/// Modèle proposé par le proxy, avec son tarif OpenRouter (USD par jeton) quand il est connu.
+#[derive(Serialize)]
+pub struct ModelInfo {
+    id: String,
+    prompt: Option<f64>,
+    completion: Option<f64>,
+}
+
+fn model_info(m: &Value) -> Option<ModelInfo> {
+    // OpenRouter donne les tarifs en chaînes ("0.000003") ; "-1" signale un tarif variable.
+    let price = |k: &str| {
+        let p = &m["pricing"][k];
+        p.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| p.as_f64()).filter(|v| *v >= 0.0)
+    };
+    Some(ModelInfo { id: m["id"].as_str()?.to_string(), prompt: price("prompt"), completion: price("completion") })
 }
 
 /// Isole le document HTML dans la réponse (ignore les balises ``` et le texte autour).
@@ -411,6 +428,15 @@ mod tests {
         assert_eq!(extract_html(r).unwrap(), "<!DOCTYPE html><html><body>x</body></html>");
         assert_eq!(extract_html("<html><body>coupé").unwrap(), "<html><body>coupé");
         assert!(extract_html("pas de html").is_none());
+    }
+
+    #[test]
+    fn model_pricing() {
+        let m = model_info(&json!({"id": "a/b", "pricing": {"prompt": "0.000003", "completion": "0.000015"}})).unwrap();
+        assert_eq!((m.prompt, m.completion), (Some(0.000003), Some(0.000015)));
+        let m = model_info(&json!({"id": "openrouter/auto", "pricing": {"prompt": "-1"}})).unwrap();
+        assert_eq!((m.prompt, m.completion), (None, None));
+        assert!(model_info(&json!({"name": "sans id"})).is_none());
     }
 
     #[test]

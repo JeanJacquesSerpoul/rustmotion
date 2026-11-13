@@ -284,6 +284,16 @@ pub struct MotionTexts {
     pub refine_btn: &'static str,
     pub regenerate: &'static str,
     pub regenerate_title: &'static str,
+    pub confirm_title: &'static str,
+    pub confirm_refine_title: &'static str,
+    pub confirm_model: &'static str,
+    pub confirm_sent: &'static str,
+    pub confirm_reply: &'static str,
+    pub confirm_cost: &'static str,
+    pub confirm_cost_unknown: &'static str,
+    pub confirm_note: &'static str,
+    pub confirm_yes: &'static str,
+    pub confirm_no: &'static str,
 }
 
 pub static MOTION_FR: MotionTexts = MotionTexts {
@@ -333,6 +343,16 @@ pub static MOTION_FR: MotionTexts = MotionTexts {
     refine_btn: "Appliquer les ajustements",
     regenerate: "Régénérer",
     regenerate_title: "Nouvelle génération à partir du brief seul",
+    confirm_title: "Lancer la génération payante ?",
+    confirm_refine_title: "Appliquer les ajustements (payant) ?",
+    confirm_model: "Modèle",
+    confirm_sent: "Envoyé",
+    confirm_reply: "Réponse attendue",
+    confirm_cost: "Coût estimé",
+    confirm_cost_unknown: "tarif inconnu",
+    confirm_note: "Facturé par OpenRouter sur le compte du proxy. Estimation indicative : la réponse réelle et la réflexion du modèle peuvent coûter davantage.",
+    confirm_yes: "Confirmer et générer",
+    confirm_no: "Annuler",
 };
 
 pub static MOTION_EN: MotionTexts = MotionTexts {
@@ -382,6 +402,16 @@ pub static MOTION_EN: MotionTexts = MotionTexts {
     refine_btn: "Apply adjustments",
     regenerate: "Regenerate",
     regenerate_title: "New generation from the brief alone",
+    confirm_title: "Start the paid generation?",
+    confirm_refine_title: "Apply the adjustments (paid)?",
+    confirm_model: "Model",
+    confirm_sent: "Sent",
+    confirm_reply: "Expected reply",
+    confirm_cost: "Estimated cost",
+    confirm_cost_unknown: "price unknown",
+    confirm_note: "Billed by OpenRouter to the proxy's account. Rough estimate: the actual reply and the model's reasoning may cost more.",
+    confirm_yes: "Confirm and generate",
+    confirm_no: "Cancel",
 };
 
 pub fn motion_texts(lang: Lang) -> &'static MotionTexts {

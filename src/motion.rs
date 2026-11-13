@@ -48,6 +48,48 @@ struct AiProgress {
     elapsed_ms: u64,
 }
 
+/// Modèle proposé par le proxy, avec son tarif (USD par jeton) quand il est connu.
+#[derive(Deserialize, Clone)]
+struct ModelInfo {
+    id: String,
+    prompt: Option<f64>,
+    completion: Option<f64>,
+}
+
+/// Requête payante préparée, en attente de confirmation.
+#[derive(Clone)]
+struct Pending {
+    messages: Vec<ChatMessage>,
+    request: String,
+    refine: bool,
+    model: String,
+    input_tokens: usize,
+    output_tokens: usize,
+    /// Coût estimé en USD (inconnu si le proxy ne fournit pas le tarif du modèle).
+    cost: Option<f64>,
+}
+
+/// Réponse attendue pour une première génération (une animation de quelques scènes ≈ 10 000 caractères).
+const EXPECTED_OUTPUT_TOKENS: usize = 5000;
+
+/// Estimation grossière du nombre de jetons d'un texte (≈ 3,5 caractères par jeton pour du code / texte mixte).
+fn estimate_tokens(chars: usize) -> usize {
+    (chars as f64 / 3.5).ceil() as usize
+}
+
+fn fmt_tokens(lang: Lang, n: usize) -> String {
+    let approx = if n >= 10_000 { format!("{} k", (n + 500) / 1000) } else { n.to_string() };
+    lang.pick(format!("≈ {approx} jetons"), format!("≈ {approx} tokens"))
+}
+
+fn fmt_usd(lang: Lang, v: f64) -> String {
+    let s = if v < 0.01 { "< 0.01".to_string() } else { format!("{v:.2}") };
+    match lang {
+        Lang::Fr => format!("≈ {} $", s.replace('.', ",")),
+        Lang::En => format!("≈ ${s}"),
+    }
+}
+
 #[derive(Deserialize)]
 struct PromptFile {
     name: String,
@@ -105,7 +147,7 @@ pub fn motion_tab(
     let ai_url = RwSignal::new(load(KEY_URL, DEFAULT_URL));
     let ai_model = RwSignal::new(load(KEY_MODEL, DEFAULT_MODEL));
     let ai_key = RwSignal::new(load(KEY_KEY, ""));
-    let models = RwSignal::new(None::<Result<Vec<String>, String>>);
+    let models = RwSignal::new(None::<Result<Vec<ModelInfo>, String>>);
     let show_ai = RwSignal::new(false);
 
     // --- Brief et format -----------------------------------------------------
@@ -125,6 +167,7 @@ pub fn motion_tab(
     let refine = RwSignal::new(String::new());
     let save_error = RwSignal::new(None::<String>);
     let replay = RwSignal::new(0u32);
+    let pending = RwSignal::new(None::<Pending>);
 
     let version = move || versions.with(|v| v.get(current.get()).cloned());
     let running = move || gen.get() == Gen::Running;
@@ -142,7 +185,7 @@ pub fn motion_tab(
         let a = A { base_url: ai_url.get_untracked(), api_key: (!key.trim().is_empty()).then_some(key) };
         models.set(None);
         spawn_local(async move {
-            models.set(Some(invoke::<_, Vec<String>>("ai_models", &a).await));
+            models.set(Some(invoke::<_, Vec<ModelInfo>>("ai_models", &a).await));
         });
     };
     refresh_models();
@@ -247,16 +290,53 @@ pub fn motion_tab(
         });
     };
 
+    // Toute génération est payante : on prépare la requête, on estime son coût,
+    // et elle ne part qu'après confirmation explicite.
+    let ask_confirm = move |messages: Vec<ChatMessage>, request: String, refine: bool, output_tokens: usize| {
+        let model = ai_model.get_untracked().trim().to_string();
+        let input_tokens = estimate_tokens(messages.iter().map(|m| m.content.chars().count()).sum());
+        let price = models.with_untracked(|r| {
+            r.as_ref().and_then(|r| r.as_ref().ok()).and_then(|list| list.iter().find(|i| i.id == model)).map(|i| (i.prompt, i.completion))
+        });
+        let cost = match price {
+            Some((Some(p), Some(c))) => Some(input_tokens as f64 * p + output_tokens as f64 * c),
+            _ => None,
+        };
+        pending.set(Some(Pending { messages, request, refine, model, input_tokens, output_tokens, cost }));
+    };
+
+    let confirm = move || {
+        if let Some(p) = pending.get_untracked() {
+            pending.set(None);
+            run(p.messages, p.request);
+        }
+    };
+
+    // Une demande en attente ne doit pas partir avec des réglages qui ont changé depuis.
+    Effect::new(move |prev: Option<()>| {
+        brief.track();
+        refine.track();
+        width.track();
+        height.track();
+        duration.track();
+        ai_model.track();
+        if prev.is_some() {
+            pending.set(None);
+        }
+    });
+
     let generate = move || {
         let b = brief.get_untracked();
         let (w, h, d) = (width.get_untracked(), height.get_untracked(), duration.get_untracked());
         let msg = brief_message(&b);
-        run(
+        ask_confirm(
             vec![
                 ChatMessage { role: "system", content: system_prompt(w, h, d) },
                 ChatMessage { role: "user", content: msg },
             ],
             b,
+            false,
+            EXPECTED_OUTPUT_TOKENS,
         );
     };
 
@@ -272,7 +352,9 @@ pub fn motion_tab(
                 "\n\nAlso adapt the animation to the new format: {w}×{h} px, {d} seconds (update the rustmotion meta tags)."
             );
         }
-        run(
+        // Le modèle réécrit le document complet : la réponse fait à peu près la taille de la version actuelle.
+        let output_tokens = estimate_tokens(v.html.chars().count()).max(EXPECTED_OUTPUT_TOKENS / 2);
+        ask_confirm(
             vec![
                 ChatMessage { role: "system", content: system_prompt(w, h, d) },
                 ChatMessage { role: "user", content: brief_message(&first) },
@@ -280,6 +362,8 @@ pub fn motion_tab(
                 ChatMessage { role: "user", content: format!("{}{extra}", refine_message(&instr)) },
             ],
             instr,
+            true,
+            output_tokens,
         );
     };
 
@@ -422,7 +506,7 @@ pub fn motion_tab(
                             } />
                         <datalist id="ai-models">
                             {move || models.get().and_then(|r| r.ok()).unwrap_or_default().into_iter()
-                                .map(|id| view! { <option value=id></option> }).collect_view()}
+                                .map(|i| view! { <option value=i.id></option> }).collect_view()}
                         </datalist>
                         <p class="hint small">{move || {
                             let l = lang.get();
@@ -547,6 +631,25 @@ pub fn motion_tab(
                         if running() {
                             return view! {
                                 <button class="btn danger wide" on:click=move |_| cancel()>{tx.cancel}</button>
+                            }.into_any();
+                        }
+                        if let Some(p) = pending.get() {
+                            return view! {
+                                <div class="confirm" role="alertdialog" aria-labelledby="confirm-title">
+                                    <strong id="confirm-title">{if p.refine { tx.confirm_refine_title } else { tx.confirm_title }}</strong>
+                                    <dl class="confirm-list">
+                                        <div><dt>{tx.confirm_model}</dt><dd>{p.model.clone()}</dd></div>
+                                        <div><dt>{tx.confirm_sent}</dt><dd>{fmt_tokens(l, p.input_tokens)}</dd></div>
+                                        <div><dt>{tx.confirm_reply}</dt><dd>{fmt_tokens(l, p.output_tokens)}</dd></div>
+                                        <div class="cost"><dt>{tx.confirm_cost}</dt>
+                                            <dd>{p.cost.map(|c| fmt_usd(l, c)).unwrap_or_else(|| tx.confirm_cost_unknown.to_string())}</dd></div>
+                                    </dl>
+                                    <p class="hint small">{tx.confirm_note}</p>
+                                    <div class="row">
+                                        <button class="btn grow" on:click=move |_| pending.set(None)>{tx.confirm_no}</button>
+                                        <button class="btn primary grow" on:click=move |_| confirm()>{tx.confirm_yes}</button>
+                                    </div>
+                                </div>
                             }.into_any();
                         }
                         let status = match gen.get() {

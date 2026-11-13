@@ -517,6 +517,28 @@ pub fn App() -> impl IntoView {
         let p = source_path().to_ascii_lowercase();
         is_local() && (p.ends_with(".html") || p.ends_with(".htm"))
     };
+    // Raccourcis de la barre commune : Ctrl+O (ouvrir une animation), Ctrl+S (en sauvegarder une copie).
+    let _ = window_event_listener(leptos::ev::keydown, move |ev| {
+        if !(ev.ctrl_key() || ev.meta_key()) || ev.alt_key() || ev.shift_key() || ev.repeat() || !in_tauri {
+            return;
+        }
+        match ev.key().to_ascii_lowercase().as_str() {
+            "o" => {
+                ev.prevent_default();
+                if !rendering() {
+                    pick("html", input, true);
+                }
+            }
+            "s" => {
+                ev.prevent_default();
+                if is_html_file() {
+                    save_copy();
+                }
+            }
+            _ => {}
+        }
+    });
+
     let source_format = Signal::derive(move || {
         probe_info.get().map(|i| SourceFormat { path: source_path(), width: i.width, height: i.height, duration: i.duration })
     });

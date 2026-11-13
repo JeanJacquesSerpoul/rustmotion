@@ -41,6 +41,8 @@ struct AiResult {
     html: String,
     truncated: bool,
     model: Option<String>,
+    #[serde(default)]
+    cost: Option<f64>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -95,6 +97,8 @@ enum MusicGen {
     /// Composition en cours (secondes écoulées).
     Running(u32),
     Cancelled,
+    /// Bande son retirée : nom sous lequel elle a été mise de côté.
+    Removed(String),
     Error(String),
 }
 
@@ -109,6 +113,20 @@ fn estimate_tokens(chars: usize) -> usize {
 fn fmt_tokens(lang: Lang, n: usize) -> String {
     let approx = if n >= 10_000 { format!("{} k", (n + 500) / 1000) } else { n.to_string() };
     lang.pick(format!("≈ {approx} jetons"), format!("≈ {approx} tokens"))
+}
+
+/// Montant réellement facturé (sans « ≈ ») : 3 décimales au plus, 2 au moins.
+fn fmt_cost(lang: Lang, v: f64) -> String {
+    let s = if v > 0.0 && v < 0.001 {
+        "< 0.001".to_string()
+    } else {
+        let s = format!("{v:.3}");
+        if s.ends_with('0') { s[..s.len() - 1].to_string() } else { s }
+    };
+    match lang {
+        Lang::Fr => format!("{} $", s.replace('.', ",")),
+        Lang::En => format!("${s}"),
+    }
 }
 
 fn fmt_usd(lang: Lang, v: f64) -> String {
@@ -141,6 +159,10 @@ struct Version {
     request: String,
     /// Bande son compagnon (« anim.html » → « anim.mp3 »).
     audio: Option<String>,
+    /// Coût réel de la génération de cette version (USD), s'il est connu.
+    cost: Option<f64>,
+    /// Coût réel de sa bande son, si elle a été composée ici.
+    audio_cost: Option<f64>,
 }
 
 fn file_name(p: &str) -> String {
@@ -249,6 +271,8 @@ pub fn motion_tab(
     let music_style = RwSignal::new(load(KEY_MUSIC_STYLE, ""));
     let with_music = RwSignal::new(load(KEY_WITH_MUSIC, "0") == "1");
     let music = RwSignal::new(MusicGen::Idle);
+    // Total réellement facturé pendant la session (USD).
+    let spent = RwSignal::new(0.0f64);
     let sound_on = RwSignal::new(load(KEY_SOUND, "1") == "1");
     // Bande son de la version affichée, en data URL pour l'aperçu.
     let audio_src = RwSignal::new(None::<String>);
@@ -358,6 +382,8 @@ pub fn motion_tab(
                 sized,
                 request: format!("{IMPORTED} \"{name}\", opened from a file."),
                 audio: o.audio,
+                cost: None,
+                audio_cost: None,
             }]);
             current.set(0);
             refine.set(String::new());
@@ -413,14 +439,44 @@ pub fn motion_tab(
         (ai_url.get_untracked(), (!key.trim().is_empty()).then_some(key))
     };
 
-    // Rattache une bande son à la version dont le fichier est `html`, et la signale à la conversion.
-    let set_version_audio = move |html: String, audio: String| {
+    // Coût réel d'un appel : ajouté au cumul de la session.
+    let add_spent = move |cost: Option<f64>| {
+        if let Some(c) = cost {
+            spent.update(|s| *s += c);
+        }
+    };
+
+    // Rattache une bande son (ou aucune) à la version dont le fichier est `html`,
+    // et la signale à la conversion. `cost` : prix réel si elle vient d'être composée.
+    let set_version_audio = move |html: String, audio: Option<String>, cost: Option<f64>| {
         versions.update(|vs| {
             for v in vs.iter_mut().filter(|v| v.path.as_deref() == Some(html.as_str())) {
-                v.audio = Some(audio.clone());
+                v.audio = audio.clone();
+                v.audio_cost = cost;
             }
         });
-        on_audio(html, audio);
+        on_audio(html, audio.unwrap_or_default());
+    };
+
+    // Retire la bande son de l'animation affichée (le fichier est renommé, pas supprimé).
+    let detach = move || {
+        let Some(html) = version().and_then(|v| v.path) else { return };
+        #[derive(Serialize)]
+        struct A {
+            html_path: String,
+        }
+        spawn_local(async move {
+            match invoke::<_, Option<String>>("detach_audio", &A { html_path: html.clone() }).await {
+                Ok(moved) => {
+                    set_version_audio(html, None, None);
+                    music.set(match moved {
+                        Some(p) => MusicGen::Removed(file_name(&p)),
+                        None => MusicGen::Idle,
+                    });
+                }
+                Err(e) => music.set(MusicGen::Error(e)),
+            }
+        });
     };
 
     // Utilise un fichier audio existant comme bande son de l'animation `html`.
@@ -433,7 +489,7 @@ pub fn motion_tab(
         spawn_local(async move {
             match invoke::<_, String>("attach_audio", &A { html_path: html.clone(), audio_path: audio }).await {
                 Ok(p) => {
-                    set_version_audio(html, p);
+                    set_version_audio(html, Some(p), None);
                     music.set(MusicGen::Idle);
                 }
                 Err(e) => music.set(MusicGen::Error(e)),
@@ -464,13 +520,19 @@ pub fn motion_tab(
         )
         .ok();
         spawn_local(async move {
-            let res = invoke::<_, Option<String>>("ai_soundtrack", &a).await;
+            #[derive(Deserialize)]
+            struct MusicResult {
+                path: String,
+                cost: Option<f64>,
+            }
+            let res = invoke::<_, Option<MusicResult>>("ai_soundtrack", &a).await;
             if let Some(t) = tick {
                 t.clear();
             }
             match res {
-                Ok(Some(p)) => {
-                    set_version_audio(html, p);
+                Ok(Some(r)) => {
+                    add_spent(r.cost);
+                    set_version_audio(html, Some(r.path), r.cost);
                     music.set(MusicGen::Idle);
                 }
                 Ok(None) => music.set(MusicGen::Cancelled),
@@ -507,6 +569,7 @@ pub fn motion_tab(
         spawn_local(async move {
             match invoke::<_, Option<AiResult>>("ai_generate", &a).await {
                 Ok(Some(r)) => {
+                    add_spent(r.cost);
                     #[derive(Serialize)]
                     struct S {
                         html: String,
@@ -524,6 +587,8 @@ pub fn motion_tab(
                             path: path.clone(),
                             truncated: r.truncated,
                             model: r.model,
+                            cost: r.cost,
+                            audio_cost: None,
                             width: w,
                             height: h,
                             duration: d,
@@ -796,13 +861,46 @@ pub fn motion_tab(
     let has_file = move || version().is_some_and(|v| v.path.is_some());
     let can_music = move || in_tauri && !busy() && has_file();
 
+    // --- Raccourcis : Ctrl+Entrée (générer / ajuster), Échap (annuler une confirmation),
+    // Espace (rejouer, hors champ de saisie). Ils ouvrent la confirmation, sans jamais la valider.
+    let _ = window_event_listener(leptos::ev::keydown, move |ev| {
+        if !active.get_untracked() || ev.repeat() {
+            return;
+        }
+        let focus = document().active_element();
+        let focus_id = focus.as_ref().map(|e| e.id()).unwrap_or_default();
+        let typing = focus.as_ref().is_some_and(|e| {
+            matches!(e.tag_name().to_ascii_lowercase().as_str(), "input" | "textarea" | "select" | "button")
+        });
+        let key = ev.key();
+        if key == "Escape" && pending.with_untracked(Option::is_some) {
+            ev.prevent_default();
+            pending.set(None);
+        } else if key == "Enter" && (ev.ctrl_key() || ev.meta_key()) {
+            ev.prevent_default();
+            if pending.with_untracked(Option::is_some) {
+                return;
+            }
+            // Dans le champ d'ajustements, ou s'il est rempli : ajuster ; sinon : générer depuis le brief.
+            let want_refine = focus_id == "refine" || (focus_id != "brief" && !refine.get_untracked().trim().is_empty());
+            if want_refine && can_refine() {
+                apply_refine();
+            } else if !want_refine && can_generate() {
+                generate();
+            }
+        } else if key == " " && !typing && !ev.ctrl_key() && version().is_some() && !running() {
+            ev.prevent_default();
+            replay.update(|r| *r += 1);
+        }
+    });
+
     view! {
         <main class="grid motion" class:hidden=move || !active.get()>
             <section class="col settings">
                 // ---------------- Brief
                 <div class="card">
                     <div class="card-h"><span class="step">"1"</span><h2>{move || m().brief}</h2></div>
-                    <textarea class="brief" rows="10" placeholder=move || m().brief_placeholder
+                    <textarea id="brief" class="brief" rows="10" placeholder=move || m().brief_placeholder
                         prop:value=move || brief.get()
                         on:input=move |ev| { brief.set(event_target_value(&ev)); brief_file.set(None); } />
                     <div class="row">
@@ -885,13 +983,22 @@ pub fn motion_tab(
                                     let current_audio = version().and_then(|v| v.audio);
                                     view! {
                                         {match current_audio {
-                                            Some(a) => view! { <span class="chip ok music-file" title=a.clone()>"♪ "{file_name(&a)}</span> }.into_any(),
+                                            Some(a) => {
+                                                let cost = version().and_then(|v| v.audio_cost)
+                                                    .map(|c| format!(" · {}", fmt_cost(l, c))).unwrap_or_default();
+                                                view! {
+                                                    <span class="chip ok music-file" title=a.clone()>"♪ "{file_name(&a)}{cost}</span>
+                                                    <button class="link push" title=tx.music_remove_title disabled=move || busy()
+                                                        on:click=move |_| detach()>{tx.music_remove}</button>
+                                                }.into_any()
+                                            }
                                             None if version().is_some() => view! { <span class="hint">{tx.music_none}</span> }.into_any(),
                                             None => view! { <span class="hint">{tx.music_need_anim}</span> }.into_any(),
                                         }}
                                         {match state {
                                             MusicGen::Error(e) => Some(view! { <div class="result err"><strong>{tx.music_failed}</strong><pre>{e}</pre></div> }.into_any()),
                                             MusicGen::Cancelled => Some(view! { <span class="hint">{tx.music_cancelled}</span> }.into_any()),
+                                            MusicGen::Removed(name) => Some(view! { <span class="hint">{i18n::music_removed(l, &name)}</span> }.into_any()),
                                             _ => None,
                                         }}
                                     }.into_any()
@@ -961,7 +1068,10 @@ pub fn motion_tab(
                 <div class="card">
                     <div class="card-h">
                         <span class="step">"4"</span><h2>{move || m().ai}</h2>
-                        <span class="card-meta">{move || ai_model.get()}</span>
+                        <span class="card-meta" class:spent=move || { spent.get() > 0.0 }>{move || {
+                            let s = spent.get();
+                            if s > 0.0 { i18n::session_spent(lang.get(), &fmt_cost(lang.get(), s)) } else { ai_model.get() }
+                        }}</span>
                     </div>
                     <div class="field">
                         <label class="lbl" for="ai-model">{move || m().ai_model}</label>
@@ -1084,7 +1194,7 @@ pub fn motion_tab(
                         }></audio>
                     <Show when=move || version().is_some() && !running()>
                         <div class="row">
-                            <button class="btn" on:click=move |_| replay.update(|r| *r += 1)>{move || m().replay}</button>
+                            <button class="btn" title=move || m().replay_title on:click=move |_| replay.update(|r| *r += 1)>{move || m().replay}</button>
                             <Show when=move || audio_src.with(Option::is_some)>
                                 <button class="btn ghost sound" class:off=move || !sound_on.get()
                                     title=move || if sound_on.get() { m().sound_mute } else { m().sound_unmute }
@@ -1106,7 +1216,11 @@ pub fn motion_tab(
                                 })
                             }}
                             <span class="grow"></span>
-                            {move || version().and_then(|v| v.model).map(|md| view! { <span class="hint small">{md}</span> })}
+                            {move || version().map(|v| {
+                                let cost = v.cost.map(|c| fmt_cost(lang.get(), c));
+                                let label = [v.model, cost].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                                (!label.is_empty()).then(|| view! { <span class="hint small" title=move || m().cost_real>{label}</span> })
+                            })}
                         </div>
                     </Show>
                 </div>
@@ -1157,7 +1271,7 @@ pub fn motion_tab(
                         match version() {
                             None => view! {
                                 {status}
-                                <button class="btn primary big wide" on:click=move |_| generate() disabled=move || !can_generate()>
+                                <button class="btn primary big wide" title=tx.shortcut_run on:click=move |_| generate() disabled=move || !can_generate()>
                                     {tx.generate}
                                 </button>
                                 <p class="hint center">{move || {
@@ -1184,7 +1298,7 @@ pub fn motion_tab(
                                             prop:value=move || refine.get()
                                             on:input=move |ev| refine.set(event_target_value(&ev)) />
                                         <div class="row">
-                                            <button class="btn grow" on:click=move |_| apply_refine() disabled=move || !can_refine()>
+                                            <button class="btn grow" title=tx.shortcut_run on:click=move |_| apply_refine() disabled=move || !can_refine()>
                                                 {tx.refine_btn}
                                             </button>
                                             <button class="btn ghost" on:click=move |_| generate() disabled=move || !can_generate()

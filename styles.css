@@ -14,8 +14,8 @@
 
   /* Texte */
   --text: #e8e6e1;
-  --muted: #9a9893;
-  --dim: #6c6a66;
+  --muted: #a8a6a1;     /* ≈ 6,9:1 sur --surface */
+  --dim: #8f8d89;       /* ≈ 4,9:1 sur --surface : minimum AA pour les petits textes */
 
   /* Accent unique : laiton */
   --accent: #c9a86a;
@@ -297,7 +297,7 @@ dd { margin: 0; font-weight: 600; font-size: 13.5px; }
 .hidden { display: none !important; }
 .tabs { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--well); }
 .tabs button {
-  display: inline-flex; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--muted);
+  white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--muted);
   padding: 6px 14px; border-radius: 6px; font-weight: 600; font-size: 13px; transition: background .15s, color .15s;
 }
 .tabs button:hover { color: var(--text); }
@@ -324,6 +324,7 @@ input[type=password] {
 input[type=password]:focus { border-color: var(--accent-line); }
 .fields.three { grid-template-columns: repeat(3, 1fr); }
 .card-meta { margin-left: auto; color: var(--dim); font-size: 12px; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-meta.spent { color: var(--accent); }
 .hint.small { font-size: 12px; margin-top: 6px; }
 .link.push { margin-left: auto; align-self: center; }
 .mstage { display: block; }
@@ -377,11 +378,20 @@ input[type=password]:focus { border-color: var(--accent-line); }
 .drop-overlay div { border: 1px dashed var(--accent); border-radius: 12px; padding: 36px 56px; font-size: 18px; font-weight: 600; color: var(--text); }
 .app.dragging .drop-overlay { opacity: 1; }
 
+@media (max-width: 820px) {
+  .brand h1 { display: none; }
+  .tools .badge { padding: 4px 8px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation-duration: .01ms !important; }
 }
 
 @media (max-width: 1100px) {
+  /* En-tête compact : onglets sur une ligne, sous-titre masqué */
+  .top { padding: 12px 20px; gap: 12px; }
+  .brand p { display: none; }
+  .tabs button { padding: 6px 10px; }
   .filebar { grid-template-columns: auto minmax(0, 1fr); }
   .fb-actions { grid-column: 1 / -1; flex-wrap: wrap; }
   .grid { grid-template-columns: 1fr; }

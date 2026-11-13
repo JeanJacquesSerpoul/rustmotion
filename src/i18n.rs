@@ -99,7 +99,7 @@ pub static FR: Texts = Texts {
     bar_label: "Animation",
     bar_empty: "Aucune animation",
     bar_hint: "Générez-en une, ou ouvrez un fichier .html, un dossier contenant index.html ou une URL. Le glisser-déposer fonctionne aussi.",
-    btn_file_title: "Ouvrir une animation HTML",
+    btn_file_title: "Ouvrir une animation HTML (Ctrl+O)",
     btn_folder_title: "Ouvrir un dossier contenant index.html",
     path_placeholder: "Chemin ou https://…",
     btn_file: "Fichier…",
@@ -179,7 +179,7 @@ pub static EN: Texts = Texts {
     bar_label: "Animation",
     bar_empty: "No animation",
     bar_hint: "Generate one, or open an .html file, a folder containing index.html or a URL. Drag and drop works too.",
-    btn_file_title: "Open an HTML animation",
+    btn_file_title: "Open an HTML animation (Ctrl+O)",
     btn_folder_title: "Open a folder containing index.html",
     path_placeholder: "Path or https://…",
     btn_file: "File…",
@@ -331,6 +331,11 @@ pub struct MotionTexts {
     pub confirm_prompt: &'static str,
     pub sound_mute: &'static str,
     pub sound_unmute: &'static str,
+    pub replay_title: &'static str,
+    pub shortcut_run: &'static str,
+    pub cost_real: &'static str,
+    pub music_remove: &'static str,
+    pub music_remove_title: &'static str,
 }
 
 pub static MOTION_FR: MotionTexts = MotionTexts {
@@ -377,7 +382,7 @@ pub static MOTION_FR: MotionTexts = MotionTexts {
     reveal: "Afficher",
     reveal_title: "Afficher dans le dossier",
     save: "Sauvegarder",
-    save_title: "Enregistrer une copie à l'emplacement de votre choix",
+    save_title: "Enregistrer une copie à l'emplacement de votre choix (Ctrl+S)",
     copy_saved: "Copie sauvegardée :",
     copy_failed: "Sauvegarde impossible",
     refine: "Ajustements (optionnel)",
@@ -415,6 +420,11 @@ pub static MOTION_FR: MotionTexts = MotionTexts {
     confirm_prompt: "Demande envoyée au modèle",
     sound_mute: "Couper le son de l'aperçu",
     sound_unmute: "Activer le son de l'aperçu",
+    replay_title: "Rejouer (Espace)",
+    shortcut_run: "Ctrl+Entrée",
+    cost_real: "Modèle et coût réel facturé pour cette version",
+    music_remove: "Retirer",
+    music_remove_title: "Le fichier est renommé, pas supprimé",
 };
 
 pub static MOTION_EN: MotionTexts = MotionTexts {
@@ -461,7 +471,7 @@ pub static MOTION_EN: MotionTexts = MotionTexts {
     reveal: "Show",
     reveal_title: "Show in folder",
     save: "Save",
-    save_title: "Save a copy wherever you choose",
+    save_title: "Save a copy wherever you choose (Ctrl+S)",
     copy_saved: "Copy saved:",
     copy_failed: "Could not save",
     refine: "Adjustments (optional)",
@@ -499,6 +509,11 @@ pub static MOTION_EN: MotionTexts = MotionTexts {
     confirm_prompt: "Request sent to the model",
     sound_mute: "Mute the preview",
     sound_unmute: "Unmute the preview",
+    replay_title: "Replay (Space)",
+    shortcut_run: "Ctrl+Enter",
+    cost_real: "Model and actual cost billed for this version",
+    music_remove: "Remove",
+    music_remove_title: "The file is renamed, not deleted",
 };
 
 pub fn motion_texts(lang: Lang) -> &'static MotionTexts {
@@ -539,6 +554,20 @@ pub fn writing(lang: Lang, n: usize) -> String {
     match lang {
         Lang::Fr => format!("Écriture de l'animation… {}", chars(lang, n)),
         Lang::En => format!("Writing the animation… {}", chars(lang, n)),
+    }
+}
+
+pub fn music_removed(lang: Lang, name: &str) -> String {
+    match lang {
+        Lang::Fr => format!("Bande son retirée (renommée en « {name} »)."),
+        Lang::En => format!("Soundtrack removed (renamed to “{name}”)."),
+    }
+}
+
+pub fn session_spent(lang: Lang, amount: &str) -> String {
+    match lang {
+        Lang::Fr => format!("Dépensé cette session : {amount}"),
+        Lang::En => format!("Spent this session: {amount}"),
     }
 }
 

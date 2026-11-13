@@ -55,6 +55,13 @@ pub struct AiResult {
     /// La réponse a été coupée (limite de jetons atteinte) : l'animation est probablement incomplète.
     truncated: bool,
     model: Option<String>,
+    /// Coût réel facturé par OpenRouter (USD), s'il est communiqué.
+    cost: Option<f64>,
+}
+
+/// Coût réel d'un appel, communiqué par OpenRouter dans `usage.cost`.
+fn usage_cost(v: &Value) -> Option<f64> {
+    v["usage"]["cost"].as_f64().filter(|c| *c >= 0.0)
 }
 
 #[derive(Serialize)]
@@ -196,6 +203,7 @@ fn generate(req: &AiRequest, cancel: &AtomicBool, mut on_progress: impl FnMut(Ai
         "model": req.model.trim(),
         "messages": req.messages,
         "stream": true,
+        "usage": {"include": true},
     });
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(20))
@@ -216,6 +224,7 @@ fn generate(req: &AiRequest, cancel: &AtomicBool, mut on_progress: impl FnMut(Ai
     let mut content = String::new();
     let mut model = None;
     let mut finish = None::<String>;
+    let mut cost = None;
 
     if streamed {
         let mut reasoning = 0usize;
@@ -238,6 +247,7 @@ fn generate(req: &AiRequest, cancel: &AtomicBool, mut on_progress: impl FnMut(Ai
             if model.is_none() {
                 model = v.get("model").and_then(Value::as_str).map(String::from);
             }
+            cost = usage_cost(&v).or(cost);
             let choice = &v["choices"][0];
             if let Some(s) = choice["delta"]["content"].as_str() {
                 content.push_str(s);
@@ -267,6 +277,7 @@ fn generate(req: &AiRequest, cancel: &AtomicBool, mut on_progress: impl FnMut(Ai
             return Err(e);
         }
         model = v.get("model").and_then(Value::as_str).map(String::from);
+        cost = usage_cost(&v);
         content = v["choices"][0]["message"]["content"].as_str().unwrap_or_default().to_string();
         finish = v["choices"][0]["finish_reason"].as_str().map(String::from);
     }
@@ -282,7 +293,7 @@ fn generate(req: &AiRequest, cancel: &AtomicBool, mut on_progress: impl FnMut(Ai
         )
     })?;
     let truncated = finish.as_deref() == Some("length") || !html.to_ascii_lowercase().contains("</html>");
-    Ok(Some(AiResult { html, truncated, model }))
+    Ok(Some(AiResult { html, truncated, model, cost }))
 }
 
 #[tauri::command]
@@ -542,9 +553,10 @@ fn companion_of(html: &Path) -> Option<PathBuf> {
 
 /// Écarte les bandes son compagnon existantes (renommées, jamais supprimées) avant d'en
 /// installer une nouvelle, pour que la détection ne retombe pas sur l'ancienne.
-fn set_aside_companions(html: &Path) -> Result<(), String> {
+fn set_aside_companions(html: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut moved = Vec::new();
     let (Some(dir), Some(stem)) = (html.parent(), html.file_stem().map(|s| s.to_string_lossy().into_owned())) else {
-        return Ok(());
+        return Ok(moved);
     };
     for ext in rustmotion_types::AUDIO_EXTS {
         let old = dir.join(format!("{stem}.{ext}"));
@@ -559,8 +571,20 @@ fn set_aside_companions(html: &Path) -> Result<(), String> {
             n += 1;
         }
         std::fs::rename(&old, &dest).map_err(|e| format!("{}: {e}", old.display()))?;
+        moved.push(dest);
     }
-    Ok(())
+    Ok(moved)
+}
+
+/// Retire la bande son de l'animation : le fichier est renommé (jamais supprimé).
+/// Renvoie son nouveau chemin.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn detach_audio(html_path: String) -> Result<Option<String>, String> {
+    blocking(move || {
+        let html = resolve_html(&html_path)?;
+        Ok(set_aside_companions(&html)?.into_iter().next().map(|p| p.display().to_string()))
+    })
+    .await
 }
 
 /// Installe `bytes` comme bande son compagnon de la page et renvoie son chemin.
@@ -652,10 +676,17 @@ pub struct MusicRequest {
     html_path: String,
 }
 
+#[derive(Serialize)]
+pub struct MusicResult {
+    path: String,
+    /// Coût réel facturé par OpenRouter (USD), s'il est communiqué.
+    cost: Option<f64>,
+}
+
 /// Compose une bande son avec un modèle musical (Lyria) et l'installe à côté de l'animation.
-/// Renvoie son chemin, ou `None` si la génération est annulée.
+/// Renvoie son chemin et son coût, ou `None` si la génération est annulée.
 #[tauri::command]
-pub async fn ai_soundtrack(state: State<'_, AiState>, req: MusicRequest) -> Result<Option<String>, String> {
+pub async fn ai_soundtrack(state: State<'_, AiState>, req: MusicRequest) -> Result<Option<MusicResult>, String> {
     let html = resolve_html(&req.html_path)?;
     if state.busy.swap(true, Ordering::SeqCst) {
         return Err(tr!("une génération est déjà en cours", "a generation is already running").into());
@@ -664,8 +695,9 @@ pub async fn ai_soundtrack(state: State<'_, AiState>, req: MusicRequest) -> Resu
     let cancel = state.cancel.clone();
     let busy = state.busy.clone();
     let res = blocking(move || {
-        let Some(bytes) = compose(&req, &cancel)? else { return Ok(None) };
-        Ok(Some(install_audio(&html, &bytes, audio_ext(&bytes))?.display().to_string()))
+        let Some((bytes, cost)) = compose(&req, &cancel)? else { return Ok(None) };
+        let path = install_audio(&html, &bytes, audio_ext(&bytes))?.display().to_string();
+        Ok(Some(MusicResult { path, cost }))
     })
     .await;
     busy.store(false, Ordering::SeqCst);
@@ -674,7 +706,7 @@ pub async fn ai_soundtrack(state: State<'_, AiState>, req: MusicRequest) -> Resu
 
 /// Appel du modèle musical. OpenRouter renvoie l'audio en base64 dans le flux SSE
 /// (`choices[0].delta.audio.data`, éventuellement en plusieurs morceaux).
-fn compose(req: &MusicRequest, cancel: &AtomicBool) -> Result<Option<Vec<u8>>, String> {
+fn compose(req: &MusicRequest, cancel: &AtomicBool) -> Result<Option<(Vec<u8>, Option<f64>)>, String> {
     use base64::Engine;
     let url = endpoint(&req.base_url);
     let body = json!({
@@ -683,6 +715,7 @@ fn compose(req: &MusicRequest, cancel: &AtomicBool) -> Result<Option<Vec<u8>>, S
         "modalities": ["text", "audio"],
         "audio": {"format": "mp3"},
         "stream": true,
+        "usage": {"include": true},
     });
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(20))
@@ -695,6 +728,7 @@ fn compose(req: &MusicRequest, cancel: &AtomicBool) -> Result<Option<Vec<u8>>, S
     let resp = call.send_string(&body.to_string()).map_err(|e| http_error(&url, e))?;
     let mut b64 = String::new();
     let mut text = String::new();
+    let mut cost = None;
     if resp.content_type().contains("event-stream") {
         let reader = BufReader::new(resp.into_reader());
         for line in reader.lines() {
@@ -712,6 +746,7 @@ fn compose(req: &MusicRequest, cancel: &AtomicBool) -> Result<Option<Vec<u8>>, S
             if let Some(e) = api_error(&v) {
                 return Err(e);
             }
+            cost = usage_cost(&v).or(cost);
             let delta = &v["choices"][0]["delta"];
             if let Some(s) = delta["audio"]["data"].as_str() {
                 b64.push_str(s);
@@ -727,6 +762,7 @@ fn compose(req: &MusicRequest, cancel: &AtomicBool) -> Result<Option<Vec<u8>>, S
         if let Some(e) = api_error(&v) {
             return Err(e);
         }
+        cost = usage_cost(&v);
         let msg = &v["choices"][0]["message"];
         b64 = msg["audio"]["data"].as_str().unwrap_or_default().to_string();
         text = msg["content"].as_str().unwrap_or_default().to_string();
@@ -743,7 +779,7 @@ fn compose(req: &MusicRequest, cancel: &AtomicBool) -> Result<Option<Vec<u8>>, S
     }
     base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
-        .map(Some)
+        .map(|bytes| Some((bytes, cost)))
         .map_err(|e| format!("{}: {e}", tr!("audio illisible", "unreadable audio")))
 }
 

@@ -4,6 +4,7 @@ use rustmotion_types::{Codec, Framing, Lang, ProbeInfo, Progress, RenderSettings
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::{self, texts};
+use crate::icons::{icon, Icon};
 use crate::motion::SourceFormat;
 use crate::settings::{load, settings_panel, store, AiSettings};
 use crate::tauri::{self, invoke};
@@ -708,8 +709,8 @@ pub fn App() -> impl IntoView {
                             }.into_any(),
                         }
                     }}
-                    <button class="btn ghost gear" title=move || t().settings_title aria-label=move || t().settings_title
-                        aria-haspopup="dialog" on:click=move |_| settings_open.set(true)>"⚙"</button>
+                    <button class="btn ghost icon round" title=move || t().settings_title aria-label=move || t().settings_title
+                        aria-haspopup="dialog" on:click=move |_| settings_open.set(true)>{icon(Icon::Settings)}</button>
                 </div>
             </header>
 
@@ -786,16 +787,21 @@ pub fn App() -> impl IntoView {
                     </div>
                     <div class="fb-actions">
                         <div class="fb-group">
-                            <button class="btn" title=move || t().btn_file_title on:click=move |_| pick("html", input, true) disabled=rendering>
-                                {move || t().btn_file}
+                            // Icônes seules une fois une animation chargée ; avec leur libellé quand la barre est vide.
+                            <button class="btn icon" title=move || t().btn_file_title aria-label=move || t().btn_file_title
+                                on:click=move |_| pick("html", input, true) disabled=rendering>
+                                {icon(Icon::File)}<span class="btn-label">{move || t().btn_file}</span>
                             </button>
-                            <button class="btn" title=move || t().btn_folder_title on:click=move |_| pick_folder() disabled=rendering>
-                                {move || t().btn_folder}
+                            <button class="btn icon" title=move || t().btn_folder_title aria-label=move || t().btn_folder_title
+                                on:click=move |_| pick_folder() disabled=rendering>
+                                {icon(Icon::Folder)}<span class="btn-label">{move || t().btn_folder}</span>
                             </button>
                             <div class="recent-wrap">
-                                <button class="btn" aria-haspopup="menu" aria-expanded=move || recent_open.get().to_string()
-                                    title=move || t().recent_title on:click=move |_| toggle_recent() disabled=rendering>
-                                    {move || t().recent}" ▾"
+                                <button class="btn icon" aria-haspopup="menu" aria-expanded=move || recent_open.get().to_string()
+                                    title=move || t().recent_title aria-label=move || t().recent_title
+                                    on:click=move |_| toggle_recent() disabled=rendering>
+                                    {icon(Icon::History)}<span class="btn-label">{move || t().recent}</span>
+                                    <span class="caret">{icon(Icon::ChevronDown)}</span>
                                 </button>
                                 <Show when=move || recent_open.get()>
                                     <div class="menu-scrim" on:click=move |_| recent_open.set(false)></div>
@@ -840,12 +846,12 @@ pub fn App() -> impl IntoView {
                                 {move || {
                                     let m = i18n::motion_texts(lang.get());
                                     view! {
-                                        <button class="btn ghost" title=m.open_title disabled=move || !is_local()
-                                            on:click=move |_| open_path("open_file", source_path())>{m.open_browser}</button>
-                                        <button class="btn ghost" title=m.reveal_title disabled=move || !is_local()
-                                            on:click=move |_| open_path("reveal", source_path())>{m.reveal}</button>
-                                        <button class="btn ghost" title=m.save_title disabled=move || !is_html_file()
-                                            on:click=move |_| save_copy()>{m.save}</button>
+                                        <button class="btn ghost icon" title=m.open_title aria-label=m.open_title disabled=move || !is_local()
+                                            on:click=move |_| open_path("open_file", source_path())>{icon(Icon::External)}</button>
+                                        <button class="btn ghost icon" title=m.reveal_title aria-label=m.reveal_title disabled=move || !is_local()
+                                            on:click=move |_| open_path("reveal", source_path())>{icon(Icon::Reveal)}</button>
+                                        <button class="btn ghost icon" title=m.save_title aria-label=m.save_title disabled=move || !is_html_file()
+                                            on:click=move |_| save_copy()>{icon(Icon::Save)}</button>
                                     }
                                 }}
                             </div>
@@ -946,7 +952,8 @@ pub fn App() -> impl IntoView {
                                     }.into_any(),
                                 }
                             }}
-                            <button class="link" on:click=move |_| run_probe() disabled=move || input.get().is_empty() || probing.get() || rendering()>{move || t().reanalyse}</button>
+                            <button class="btn ghost icon small push" title=move || t().reanalyse aria-label=move || t().reanalyse
+                                on:click=move |_| run_probe() disabled=move || input.get().is_empty() || probing.get() || rendering()>{icon(Icon::Refresh)}</button>
                         </div>
                     </div>
 
@@ -1076,9 +1083,11 @@ pub fn App() -> impl IntoView {
                             <div class="row">
                                 <input class="grow" type="text" placeholder=move || t().audio_none prop:value=move || audio.get()
                                     on:change=move |ev| { audio_auto.set(false); audio.set(event_target_value(&ev)); } />
-                                <button class="btn" on:click=move |_| pick("audio", audio, false)>{move || t().btn_choose}</button>
+                                <button class="btn icon" title=move || t().btn_choose aria-label=move || t().btn_choose
+                                    on:click=move |_| pick("audio", audio, false)>{icon(Icon::Music)}</button>
                                 <Show when=move || !audio.get().is_empty()>
-                                    <button class="btn ghost" on:click=move |_| { audio_auto.set(false); audio.set(String::new()); }>"✕"</button>
+                                    <button class="btn ghost icon" title=move || t().audio_remove aria-label=move || t().audio_remove
+                                        on:click=move |_| { audio_auto.set(false); audio.set(String::new()); }>{icon(Icon::Close)}</button>
                                 </Show>
                             </div>
                         </div>
@@ -1087,7 +1096,8 @@ pub fn App() -> impl IntoView {
                             <div class="row">
                                 <input class="grow" type="text" prop:value=move || output.get()
                                     on:change=move |ev| { output.set(event_target_value(&ev)); output_touched.set(true); } />
-                                <button class="btn" on:click=move |_| pick_output()>{move || t().btn_save_as}</button>
+                                <button class="btn icon" title=move || t().btn_save_as aria-label=move || t().btn_save_as
+                                    on:click=move |_| pick_output()>{icon(Icon::Folder)}</button>
                             </div>
                         </div>
                         <button class="link" on:click=move |_| show_advanced.update(|v| *v = !*v)>
@@ -1147,7 +1157,7 @@ pub fn App() -> impl IntoView {
                                             <div><dt>{tx.elapsed}</dt><dd>{p.as_ref().map(|p| fmt_ms(p.elapsed_ms)).unwrap_or("—".into())}</dd></div>
                                             <div><dt>{tx.remaining}</dt><dd>{p.as_ref().and_then(|p| p.eta_ms).map(fmt_ms).unwrap_or("—".into())}</dd></div>
                                         </dl>
-                                        <button class="btn danger wide" on:click=move |_| cancel()>{tx.cancel}</button>
+                                        <button class="btn danger wide" on:click=move |_| cancel()>{icon(Icon::Close)}{tx.cancel}</button>
                                     }.into_any()
                                 }
                                 Phase::Done(path) => {
@@ -1160,10 +1170,10 @@ pub fn App() -> impl IntoView {
                                             {p.map(|p| view! { <small>{i18n::frames_in(l, p.total, &fmt_ms(p.elapsed_ms))}</small> })}
                                         </div>
                                         <div class="row">
-                                            <button class="btn primary grow" on:click=move |_| open_path("open_file", p1.clone())>{tx.play}</button>
-                                            <button class="btn grow" on:click=move |_| open_path("reveal", p2.clone())>{tx.reveal}</button>
+                                            <button class="btn primary grow" on:click=move |_| open_path("open_file", p1.clone())>{icon(Icon::Play)}{tx.play}</button>
+                                            <button class="btn grow" on:click=move |_| open_path("reveal", p2.clone())>{icon(Icon::Reveal)}{tx.reveal}</button>
                                         </div>
-                                        <button class="btn wide ghost" on:click=move |_| start_render() disabled=move || !can_render()>{tx.rerender}</button>
+                                        <button class="btn wide ghost" on:click=move |_| start_render() disabled=move || !can_render()>{icon(Icon::Restart)}{tx.rerender}</button>
                                     }.into_any()
                                 }
                                 other => view! {
@@ -1173,7 +1183,7 @@ pub fn App() -> impl IntoView {
                                         _ => None,
                                     }}
                                     <button class="btn primary big wide" on:click=move |_| start_render() disabled=move || !can_render()>
-                                        {tx.export_btn}
+                                        {icon(Icon::Video)}{tx.export_btn}
                                     </button>
                                     <p class="hint center" class:refused=move || probe_info.get().is_some_and(|i| i.rejection().is_some())>{move || {
                                         let l = lang.get();

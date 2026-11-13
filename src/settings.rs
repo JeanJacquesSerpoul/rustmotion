@@ -7,6 +7,7 @@ use rustmotion_types::{Lang, ToolStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::{self, motion_texts, texts};
+use crate::icons::{icon, Icon};
 use crate::tauri::{self, invoke};
 
 const KEY_URL: &str = "rustmotion.ai.url";
@@ -132,7 +133,7 @@ pub fn settings_panel(
             <aside class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
                 <header class="settings-h">
                     <h2 id="settings-title">{move || t().settings_title}</h2>
-                    <button class="btn ghost close" title=move || t().close aria-label=move || t().close on:click=move |_| close()>"✕"</button>
+                    <button class="btn ghost icon" title=move || t().close aria-label=move || t().close on:click=move |_| close()>{icon(Icon::Close)}</button>
                 </header>
 
                 <section class="settings-sec">
@@ -177,7 +178,7 @@ pub fn settings_panel(
                             <div class="row">
                                 <input class="grow" type="text" spellcheck="false" prop:value=move || target.get()
                                     on:change=move |ev| { target.set(event_target_value(&ev).trim().to_string()); on_tools(); } />
-                                <button class="btn" on:click=move |_| pick_exe(target)>"…"</button>
+                                <button class="btn icon" title=move || t().browse aria-label=move || t().browse on:click=move |_| pick_exe(target)>{icon(Icon::Folder)}</button>
                             </div>
                             // Outil réellement utilisé (détecté automatiquement si le champ est vide).
                             <p class="hint small tool-found">{move || {

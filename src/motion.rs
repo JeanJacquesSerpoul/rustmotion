@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::PRESETS;
 use crate::i18n::{self, motion_texts};
+use crate::icons::{icon, Icon};
 use crate::settings::{load, store, AiSettings};
 use crate::tauri::{self, invoke};
 
@@ -1068,7 +1069,7 @@ pub fn motion_tab(
                         on:input=move |ev| { brief.set(event_target_value(&ev)); brief_file.set(None); } />
                     <div class="row">
                         <button class="btn" on:click=move |_| pick_brief() disabled=move || loading_file.get() || !in_tauri>
-                            {move || m().btn_import}
+                            {icon(Icon::Upload)}{move || m().btn_import}
                         </button>
                         {move || {
                             let l = lang.get();
@@ -1094,9 +1095,8 @@ pub fn motion_tab(
                             }
                         }}
                         <Show when=move || !brief.get().is_empty()>
-                            <button class="link push" on:click=move |_| clear_brief()>
-                                {move || m().clear}
-                            </button>
+                            <button class="btn ghost icon small push" title=move || m().clear aria-label=move || m().clear
+                                on:click=move |_| clear_brief()>{icon(Icon::Trash)}</button>
                         </Show>
                     </div>
                 </div>
@@ -1156,7 +1156,8 @@ pub fn motion_tab(
                             match music.get() {
                                 MusicGen::Running(s) => view! {
                                     <span class="chip"><span class="spin"></span>{tx.music_running}<em>{fmt_secs(s as u64 * 1000)}</em></span>
-                                    <button class="link push" on:click=move |_| cancel()>{tx.cancel}</button>
+                                    <button class="btn ghost icon small push" title=tx.cancel aria-label=tx.cancel
+                                        on:click=move |_| cancel()>{icon(Icon::Close)}</button>
                                 }.into_any(),
                                 state => {
                                     let current_audio = version().and_then(|v| v.audio);
@@ -1167,8 +1168,9 @@ pub fn motion_tab(
                                                     .map(|c| format!(" · {}", fmt_cost(l, c))).unwrap_or_default();
                                                 view! {
                                                     <span class="chip ok music-file" title=a.clone()>"♪ "{file_name(&a)}{cost}</span>
-                                                    <button class="link push" title=tx.music_remove_title disabled=move || busy()
-                                                        on:click=move |_| detach()>{tx.music_remove}</button>
+                                                    <button class="btn ghost icon small push" title=format!("{} — {}", tx.music_remove, tx.music_remove_title)
+                                                        aria-label=tx.music_remove disabled=move || busy()
+                                                        on:click=move |_| detach()>{icon(Icon::Trash)}</button>
                                                 }.into_any()
                                             }
                                             None if version().is_some() => view! { <span class="hint">{tx.music_none}</span> }.into_any(),
@@ -1213,11 +1215,12 @@ pub fn motion_tab(
                     <div class="row">
                         <button class="btn grow" on:click=move |_| pick_audio() disabled=move || !can_music()
                             title=move || if has_file() { m().music_import_title } else { m().music_need_anim }>
-                            {move || m().music_import}
+                            {icon(Icon::Upload)}{move || m().music_import}
                         </button>
                         <button class="btn grow" on:click=move |_| compose_music()
                             disabled=move || !can_music() || matches!(pending.get(), Some(Pending::Music { .. }))
                             title=move || if has_file() { "" } else { m().music_need_anim }>
+                            {icon(Icon::Sparkles)}
                             {move || if version().is_some_and(|v| v.audio.is_some()) { m().music_recompose } else { m().music_compose }}
                         </button>
                     </div>
@@ -1324,7 +1327,7 @@ pub fn motion_tab(
                             <button class="btn pp" aria-pressed=move || player_playing.get().to_string()
                                 title=move || if player_playing.get() { m().pause } else { m().play }
                                 on:click=move |_| toggle_play()>
-                                {move || if player_playing.get() { "❚❚" } else { "▶" }}
+                                {move || if player_playing.get() { icon(Icon::Pause).into_any() } else { icon(Icon::Play).into_any() }}
                             </button>
                             <input type="range" class="timeline" min="0" step="0.01" aria-label=move || m().timeline
                                 max=move || version().map(|v| v.duration).unwrap_or(1.0)
@@ -1343,13 +1346,14 @@ pub fn motion_tab(
                                 on:change=move |_| scrubbing.set(false) />
                             <span class="ptime">{move || format!("{} / {}",
                                 fmt_clock(player_t.get()), fmt_clock(version().map(|v| v.duration).unwrap_or(0.0)))}</span>
-                            <button class="btn ghost" title=move || m().replay_title on:click=move |_| restart(0.0, true)>"↻"</button>
+                            <button class="btn ghost icon" title=move || m().replay_title aria-label=move || m().replay_title
+                                on:click=move |_| restart(0.0, true)>{icon(Icon::Restart)}</button>
                             <Show when=move || audio_src.with(Option::is_some)>
-                                <button class="btn ghost sound" class:off=move || !sound_on.get()
+                                <button class="btn ghost icon sound" class:off=move || !sound_on.get()
                                     title=move || if sound_on.get() { m().sound_mute } else { m().sound_unmute }
-                                    aria-pressed=move || sound_on.get().to_string()
+                                    aria-label=move || if sound_on.get() { m().sound_mute } else { m().sound_unmute }
                                     on:click=move |_| toggle_sound()>
-                                    "♪"
+                                    {move || if sound_on.get() { icon(Icon::Volume).into_any() } else { icon(Icon::VolumeOff).into_any() }}
                                 </button>
                             </Show>
                         </div>
@@ -1400,14 +1404,15 @@ pub fn motion_tab(
                         <Show when=move || { spent.get() > 0.0 }>
                             <span class="spent">{move || i18n::session_spent(lang.get(), &fmt_cost(lang.get(), spent.get()))}</span>
                         </Show>
-                        <button class="link" on:click=move |_| settings_open.set(true)>{move || m().change}</button>
+                        <button class="btn ghost icon small push" title=move || m().change_model aria-label=move || m().change_model
+                            on:click=move |_| settings_open.set(true)>{icon(Icon::Settings)}</button>
                     </div>
                     {move || {
                         let l = lang.get();
                         let tx = motion_texts(l);
                         if running() {
                             return view! {
-                                <button class="btn danger wide" on:click=move |_| cancel()>{tx.cancel}</button>
+                                <button class="btn danger wide" on:click=move |_| cancel()>{icon(Icon::Close)}{tx.cancel}</button>
                             }.into_any();
                         }
                         if let Some(Pending::Animation { refine, model, input_tokens, output_tokens, cost, music, .. }) = pending.get() {
@@ -1448,7 +1453,7 @@ pub fn motion_tab(
                             None => view! {
                                 {status}
                                 <button class="btn primary big wide" title=tx.shortcut_run on:click=move |_| generate() disabled=move || !can_generate()>
-                                    {tx.generate}
+                                    {icon(Icon::Sparkles)}{tx.generate}
                                 </button>
                                 <p class="hint center">{move || {
                                     let tx = motion_texts(lang.get());
@@ -1468,7 +1473,7 @@ pub fn motion_tab(
                                     // Export direct avec les réglages courants ; l'onglet Conversion pour les ajuster.
                                     <button class="btn primary big wide" disabled=move || !saved || exporting.get()
                                         on:click=move |_| on_export()>
-                                        {move || if exporting.get() { m().exporting_btn } else { m().export_now }}
+                                        {icon(Icon::Video)}{move || if exporting.get() { m().exporting_btn } else { m().export_now }}
                                     </button>
                                     <p class="hint center export-line">
                                         <span>{move || export_status.get()}</span>
@@ -1481,11 +1486,11 @@ pub fn motion_tab(
                                             on:input=move |ev| refine.set(event_target_value(&ev)) />
                                         <div class="row">
                                             <button class="btn grow" title=tx.shortcut_run on:click=move |_| apply_refine() disabled=move || !can_refine()>
-                                                {tx.refine_btn}
+                                                {icon(Icon::Wand)}{tx.refine_btn}
                                             </button>
                                             <button class="btn ghost" on:click=move |_| generate() disabled=move || !can_generate()
                                                 title=tx.regenerate_title>
-                                                {tx.regenerate}
+                                                {icon(Icon::Refresh)}{tx.regenerate}
                                             </button>
                                         </div>
                                     </div>

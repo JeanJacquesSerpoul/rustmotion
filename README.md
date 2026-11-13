@@ -86,11 +86,11 @@ et la CLI pour Windows (x64), macOS (Apple Silicon) et Linux (x64), puis les joi
 2. Committez, puis poussez un tag du même numéro :
 
 ```bash
-git tag v0.1.0
+git tag v0.2.0
 ```
 
 ```bash
-git push origin v0.1.0
+git push origin v0.2.0
 ```
 
 3. Suivez la compilation dans l'onglet **Actions** (environ 15 à 25 minutes).

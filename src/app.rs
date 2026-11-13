@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::i18n::{self, texts};
 use crate::motion::SourceFormat;
+use crate::settings::{load, settings_panel, store, AiSettings};
 use crate::tauri::{self, invoke};
 
 #[derive(Clone, PartialEq)]
@@ -48,6 +49,43 @@ fn fmt_ms(ms: u64) -> String {
     } else {
         format!("{s} s")
     }
+}
+
+// --- Animations récentes (mémorisées sur le poste) ---------------------------------------
+
+const KEY_RECENT: &str = "rustmotion.recent";
+const MAX_RECENT: usize = 10;
+
+/// Animation récente encore présente sur le disque (voir la commande `recent_files`).
+#[derive(Deserialize, Clone)]
+struct RecentFile {
+    path: String,
+    name: String,
+    dir: String,
+    audio: bool,
+    modified: Option<u64>,
+}
+
+fn recent_list() -> Vec<String> {
+    serde_json::from_str(&load(KEY_RECENT, "[]")).unwrap_or_default()
+}
+
+fn save_recent(list: &[String]) {
+    store(KEY_RECENT, &serde_json::to_string(list).unwrap_or_else(|_| "[]".into()));
+}
+
+/// Place un fichier local en tête des récents (les URL ne sont pas retenues).
+fn remember_recent(path: &str) {
+    let path = path.trim().trim_matches('"');
+    let lower = path.to_ascii_lowercase();
+    if path.is_empty() || lower.starts_with("http://") || lower.starts_with("https://") {
+        return;
+    }
+    let mut list = recent_list();
+    list.retain(|p| !p.eq_ignore_ascii_case(path));
+    list.insert(0, path.to_string());
+    list.truncate(MAX_RECENT);
+    save_recent(&list);
 }
 
 fn file_name(p: &str) -> String {
@@ -161,6 +199,12 @@ pub fn App() -> impl IntoView {
     let dropped_audio = RwSignal::new(None::<String>);
     // La piste audio de l'export vient de la bande son compagnon (et suit donc l'animation).
     let audio_auto = RwSignal::new(true);
+    // Réglages (proxy et modèle IA, Chrome, ffmpeg) : panneau ouvert depuis l'en-tête.
+    let ai = AiSettings::new();
+    let settings_open = RwSignal::new(false);
+    // Animations ouvertes récemment (menu de la barre commune).
+    let recent_open = RwSignal::new(false);
+    let recent_items = RwSignal::new(None::<Vec<RecentFile>>);
     // Résultat de « Sauvegarder » dans la barre commune, rattaché au fichier copié.
     let copy_status = RwSignal::new(None::<(String, Result<String, String>)>);
 
@@ -306,6 +350,7 @@ pub fn App() -> impl IntoView {
 
     let set_input = move |path: String| {
         input.set(path.clone());
+        remember_recent(&path);
         files.set(None);
         // Une piste choisie à la main reste ; sinon elle suivra la nouvelle animation.
         if audio_auto.get_untracked() || audio.get_untracked().trim().is_empty() {
@@ -431,6 +476,31 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    // Menu des récents : vérifie à l'ouverture que les fichiers existent encore.
+    let toggle_recent = move || {
+        if recent_open.get_untracked() {
+            recent_open.set(false);
+            return;
+        }
+        recent_open.set(true);
+        recent_items.set(None);
+        #[derive(Serialize)]
+        struct A {
+            paths: Vec<String>,
+        }
+        spawn_local(async move {
+            let paths = recent_list();
+            let items = invoke::<_, Vec<RecentFile>>("recent_files", &A { paths }).await.unwrap_or_default();
+            // Les fichiers disparus sont oubliés.
+            save_recent(&items.iter().map(|f| f.path.clone()).collect::<Vec<_>>());
+            recent_items.set(Some(items));
+        });
+    };
+    let open_recent = move |path: String| {
+        recent_open.set(false);
+        set_input(path);
+    };
+
     let save_copy = move || {
         #[derive(Serialize)]
         struct A {
@@ -519,6 +589,12 @@ pub fn App() -> impl IntoView {
     };
     // Raccourcis de la barre commune : Ctrl+O (ouvrir une animation), Ctrl+S (en sauvegarder une copie).
     let _ = window_event_listener(leptos::ev::keydown, move |ev| {
+        // Échap ferme le panneau de réglages et le menu des récents.
+        if ev.key() == "Escape" && (settings_open.get_untracked() || recent_open.get_untracked()) {
+            settings_open.set(false);
+            recent_open.set(false);
+            return;
+        }
         if !(ev.ctrl_key() || ev.meta_key()) || ev.alt_key() || ev.shift_key() || ev.repeat() || !in_tauri {
             return;
         }
@@ -536,6 +612,46 @@ pub fn App() -> impl IntoView {
                 }
             }
             _ => {}
+        }
+    });
+
+    // --- Export lancé depuis l'onglet Motion design ---------------------------------
+    // Avancement en pourcentage pendant un rendu.
+    let render_pct = move || {
+        progress.with(|p| p.as_ref().map(|p| (p.frame as f64 / p.total.max(1) as f64 * 100.0).round() as u32)).unwrap_or(0)
+    };
+    // Réglages d'export résumés (« MP4 · H.264 · 1920×1080 · 30 fps »), ou l'avancement.
+    let export_status = Signal::derive(move || {
+        if rendering() {
+            return i18n::exporting(lang.get(), render_pct());
+        }
+        let (w, h) = out_size();
+        format!("{} · {w}×{h} · {} fps", codec.get().label(), fps.get())
+    });
+    // L'analyse de la page est peut-être encore en cours : l'export part dès qu'elle finit.
+    let export_pending = RwSignal::new(false);
+    let export_now = move || {
+        if can_render() {
+            start_render();
+        } else {
+            // Il manque quelque chose (outil, analyse refusée…) : l'onglet Conversion l'explique.
+            tab.set(Tab::Convert);
+        }
+    };
+    let on_export = move || {
+        if rendering() {
+            return;
+        }
+        if probing.get_untracked() || (probe_info.get_untracked().is_none() && !source_path().is_empty() && probe_error.get_untracked().is_none()) {
+            export_pending.set(true);
+        } else {
+            export_now();
+        }
+    };
+    Effect::new(move |_| {
+        if export_pending.get() && !probing.get() && (probe_info.get().is_some() || probe_error.get().is_some()) {
+            export_pending.set(false);
+            export_now();
         }
     });
 
@@ -574,21 +690,26 @@ pub fn App() -> impl IntoView {
                             </button>
                         }).collect_view()}
                     </div>
+                    // Pastilles des outils : un clic ouvre les réglages pour les corriger.
                     {move || {
                         let tx = t();
                         match tools.get() {
                             None => view! { <span class="badge muted">{if in_tauri { tx.detecting_tools } else { tx.outside_tauri }}</span> }.into_any(),
                             Some(tl) => view! {
-                                <span class="badge" class:ok=tl.browser.is_some() title=tl.browser.clone().unwrap_or_default()>
+                                <button class="badge" class:ok=tl.browser.is_some() title=tl.browser.clone().unwrap_or_default()
+                                    on:click=move |_| settings_open.set(true)>
                                     <i></i>{browser_name(tl.browser.as_deref(), lang.get())}
-                                </span>
-                                <span class="badge" class:ok=tl.ffmpeg.is_some()
-                                    title=format!("{}\n{}", tl.ffmpeg.clone().unwrap_or_default(), tl.ffmpeg_version.clone().unwrap_or_default())>
+                                </button>
+                                <button class="badge" class:ok=tl.ffmpeg.is_some()
+                                    title=format!("{}\n{}", tl.ffmpeg.clone().unwrap_or_default(), tl.ffmpeg_version.clone().unwrap_or_default())
+                                    on:click=move |_| settings_open.set(true)>
                                     <i></i>{if tl.ffmpeg.is_some() { "ffmpeg" } else { tx.ffmpeg_missing }}
-                                </span>
+                                </button>
                             }.into_any(),
                         }
                     }}
+                    <button class="btn ghost gear" title=move || t().settings_title aria-label=move || t().settings_title
+                        aria-haspopup="dialog" on:click=move |_| settings_open.set(true)>"⚙"</button>
                 </div>
             </header>
 
@@ -596,6 +717,9 @@ pub fn App() -> impl IntoView {
             <div class="filebar-wrap">
                 <section class="filebar" class:empty=move || source_path().is_empty() aria-label=move || t().bar_label>
                     <div class="fb-icon" aria-hidden="true"><span></span></div>
+                    <Show when=rendering>
+                        <div class="fb-progress" aria-hidden="true" style=move || format!("width:{}%", render_pct())></div>
+                    </Show>
                     <div class="fb-main">
                         <div class="fb-head">
                             <strong class="fb-name">{move || {
@@ -621,6 +745,30 @@ pub fn App() -> impl IntoView {
                             {move || files.get().and_then(|f| f.audio).map(|a| view! {
                                 <span class="chip ok" title=a.clone()>"♪ "{file_name(&a)}</span>
                             })}
+                            // État de l'export vidéo, visible depuis les deux onglets.
+                            {move || {
+                                let l = lang.get();
+                                let tx = texts(l);
+                                match phase.get() {
+                                    Phase::Rendering => Some(view! {
+                                        <button class="chip export" title=tx.export on:click=move |_| tab.set(Tab::Convert)>
+                                            <span class="spin"></span>{move || i18n::exporting(lang.get(), render_pct())}
+                                        </button>
+                                    }.into_any()),
+                                    Phase::Done(p) => {
+                                        let p2 = p.clone();
+                                        Some(view! {
+                                            <button class="chip ok" title=p on:click=move |_| open_path("open_file", p2.clone())>
+                                                {tx.video_ready}
+                                            </button>
+                                        }.into_any())
+                                    }
+                                    Phase::Error(_) => Some(view! {
+                                        <button class="chip err" on:click=move |_| tab.set(Tab::Convert)>{tx.render_failed}</button>
+                                    }.into_any()),
+                                    _ => None,
+                                }
+                            }}
                             {move || {
                                 let m = i18n::motion_texts(lang.get());
                                 copy_status.get().filter(|(src, _)| *src == input.get()).map(|(_, r)| match r {
@@ -644,6 +792,48 @@ pub fn App() -> impl IntoView {
                             <button class="btn" title=move || t().btn_folder_title on:click=move |_| pick_folder() disabled=rendering>
                                 {move || t().btn_folder}
                             </button>
+                            <div class="recent-wrap">
+                                <button class="btn" aria-haspopup="menu" aria-expanded=move || recent_open.get().to_string()
+                                    title=move || t().recent_title on:click=move |_| toggle_recent() disabled=rendering>
+                                    {move || t().recent}" ▾"
+                                </button>
+                                <Show when=move || recent_open.get()>
+                                    <div class="menu-scrim" on:click=move |_| recent_open.set(false)></div>
+                                    <div class="recent-menu" role="menu">
+                                        {move || {
+                                            let l = lang.get();
+                                            let tx = texts(l);
+                                            match recent_items.get() {
+                                                None => view! { <p class="hint"><span class="spin"></span></p> }.into_any(),
+                                                Some(items) if items.is_empty() => view! { <p class="hint">{tx.recent_empty}</p> }.into_any(),
+                                                Some(items) => {
+                                                    let now = (js_sys::Date::now() / 1000.0) as u64;
+                                                    let current = source_path();
+                                                    view! {
+                                                        {items.into_iter().map(|f| {
+                                                            let path = f.path.clone();
+                                                            let active = f.path.eq_ignore_ascii_case(&current);
+                                                            let age = f.modified.map(|m| i18n::ago(l, now.saturating_sub(m))).unwrap_or_default();
+                                                            view! {
+                                                                <button class="recent-item" class:active=active role="menuitem" title=f.path.clone()
+                                                                    on:click=move |_| open_recent(path.clone())>
+                                                                    <span class="ri-name">{f.name}{f.audio.then_some(" ♪")}</span>
+                                                                    <span class="ri-dir">{f.dir}</span>
+                                                                    <span class="ri-age">{age}</span>
+                                                                </button>
+                                                            }
+                                                        }).collect_view()}
+                                                        <button class="link ri-clear" on:click=move |_| {
+                                                            save_recent(&[]);
+                                                            recent_items.set(Some(Vec::new()));
+                                                        }>{tx.recent_clear}</button>
+                                                    }.into_any()
+                                                }
+                                            }
+                                        }}
+                                    </div>
+                                </Show>
+                            </div>
                         </div>
                         <Show when=move || !source_path().is_empty()>
                             <div class="fb-group">
@@ -669,6 +859,8 @@ pub fn App() -> impl IntoView {
                 Signal::derive(move || tab.get() == Tab::Motion),
                 dropped_doc,
                 dropped_audio,
+                ai,
+                settings_open,
                 Signal::derive(move || input.get()),
                 source_format,
                 move |path: String| {
@@ -686,6 +878,9 @@ pub fn App() -> impl IntoView {
                     }
                 },
                 move || tab.set(Tab::Convert),
+                on_export,
+                Signal::derive(move || rendering() || export_pending.get()),
+                export_status,
             )}
 
             <main class="grid" class:hidden=move || tab.get() != Tab::Convert>
@@ -791,6 +986,26 @@ pub fn App() -> impl IntoView {
                                     on:change=move |ev| if let Ok(v) = parse_f64(event_target_value(&ev)) { start.set(v.max(0.0)) } />
                             </div>
                         </div>
+                        // Écart avec le format déclaré par l'animation (balises rustmotion:, lecteur…).
+                        {move || {
+                            let i = probe_info.get()?;
+                            let size = i.width.zip(i.height).filter(|_| framed().is_none());
+                            let size_diff = size.is_some_and(|(w, h)| (w, h) != (width.get(), height.get()));
+                            let dur_diff = i.duration.is_some_and(|d| (d - duration.get()).abs() > 1e-6);
+                            (size_diff || dur_diff).then(|| {
+                                let (sw, sh) = size.unwrap_or((width.get_untracked(), height.get_untracked()));
+                                let sd = i.duration.unwrap_or_else(|| duration.get_untracked());
+                                view! {
+                                    <div class="format-diff">
+                                        <span class="chip warn">{i18n::format_differs(lang.get(), sw, sh, sd)}</span>
+                                        <button class="link" on:click=move |_| {
+                                            if let Some((w, h)) = size { width.set(w); height.set(h); }
+                                            duration.set(sd);
+                                        }>{move || i18n::motion_texts(lang.get()).restore}</button>
+                                    </div>
+                                }
+                            })
+                        }}
                         <div class="field">
                             <label class="lbl">{move || t().framing_label}</label>
                             <div class="seg tight framing">
@@ -885,22 +1100,8 @@ pub fn App() -> impl IntoView {
                                     <input type="number" min="0" step="50" prop:value=move || wait_ms.get()
                                         on:change=move |ev| if let Ok(v) = event_target_value(&ev).parse() { wait_ms.set(v) } />
                                 </div>
-                                <div class="field">
-                                    <label class="lbl">{move || t().browser_label}</label>
-                                    <div class="row">
-                                        <input class="grow" type="text" prop:value=move || browser_path.get()
-                                            on:change=move |ev| { browser_path.set(event_target_value(&ev)); refresh_tools(); } />
-                                        <button class="btn" on:click=move |_| pick("exe", browser_path, false)>"…"</button>
-                                    </div>
-                                </div>
-                                <div class="field">
-                                    <label class="lbl">{move || t().ffmpeg_label}</label>
-                                    <div class="row">
-                                        <input class="grow" type="text" prop:value=move || ffmpeg_path.get()
-                                            on:change=move |ev| { ffmpeg_path.set(event_target_value(&ev)); refresh_tools(); } />
-                                        <button class="btn" on:click=move |_| pick("exe", ffmpeg_path, false)>"…"</button>
-                                    </div>
-                                </div>
+                                // Chrome et ffmpeg se règlent dans le panneau ⚙.
+                                <button class="link" on:click=move |_| settings_open.set(true)>{move || t().tools_in_settings}</button>
                             </div>
                         </Show>
                     </div>
@@ -994,6 +1195,16 @@ pub fn App() -> impl IntoView {
                     </div>
                 </section>
             </main>
+            {settings_panel(
+                lang,
+                settings_open,
+                ai,
+                tools,
+                browser_path,
+                ffmpeg_path,
+                refresh_tools,
+                move |target: RwSignal<String>| pick("exe", target, false),
+            )}
             <div class="drop-overlay"><div>{move || t().drop_overlay}</div></div>
         </div>
     }

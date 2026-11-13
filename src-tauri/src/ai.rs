@@ -783,6 +783,50 @@ fn compose(req: &MusicRequest, cancel: &AtomicBool) -> Result<Option<(Vec<u8>, O
         .map_err(|e| format!("{}: {e}", tr!("audio illisible", "unreadable audio")))
 }
 
+/// Fichier récent encore présent sur le disque.
+#[derive(Serialize)]
+pub struct RecentFile {
+    path: String,
+    /// Nom affiché (fichier HTML, ou dossier contenant index.html).
+    name: String,
+    /// Dossier parent.
+    dir: String,
+    /// Une bande son compagnon existe.
+    audio: bool,
+    /// Dernière modification (secondes depuis 1970).
+    modified: Option<u64>,
+}
+
+/// Informations sur les animations récentes ; celles qui n'existent plus sont omises.
+#[tauri::command]
+pub async fn recent_files(paths: Vec<String>) -> Result<Vec<RecentFile>, String> {
+    blocking(move || {
+        Ok(paths
+            .into_iter()
+            .filter_map(|path| {
+                let p = PathBuf::from(path.trim().trim_matches('"'));
+                let html = if p.is_dir() { p.join("index.html") } else { p.clone() };
+                if !html.is_file() {
+                    return None;
+                }
+                let modified = std::fs::metadata(&html)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
+                Some(RecentFile {
+                    name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone()),
+                    dir: p.parent().map(|d| d.display().to_string()).unwrap_or_default(),
+                    audio: companion_of(&html).is_some(),
+                    modified,
+                    path,
+                })
+            })
+            .collect())
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

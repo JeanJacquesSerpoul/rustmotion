@@ -11,6 +11,14 @@ pub struct Texts {
     pub ffmpeg_missing: &'static str,
     pub browser_missing: &'static str,
     pub lang_title: &'static str,
+    pub settings_title: &'static str,
+    pub settings_tools: &'static str,
+    pub close: &'static str,
+    pub tools_in_settings: &'static str,
+    pub recent: &'static str,
+    pub recent_title: &'static str,
+    pub recent_empty: &'static str,
+    pub recent_clear: &'static str,
     // Source
     pub source: &'static str,
     pub bar_label: &'static str,
@@ -95,6 +103,14 @@ pub static FR: Texts = Texts {
     ffmpeg_missing: "ffmpeg introuvable",
     browser_missing: "Chromium introuvable",
     lang_title: "Langue",
+    settings_title: "Réglages",
+    settings_tools: "Outils de rendu",
+    close: "Fermer",
+    tools_in_settings: "Chrome et ffmpeg : dans les réglages ⚙",
+    recent: "Récents",
+    recent_title: "Animations ouvertes récemment",
+    recent_empty: "Aucune animation récente.",
+    recent_clear: "Vider la liste",
     source: "Analyse",
     bar_label: "Animation",
     bar_empty: "Aucune animation",
@@ -175,6 +191,14 @@ pub static EN: Texts = Texts {
     ffmpeg_missing: "ffmpeg not found",
     browser_missing: "Chromium not found",
     lang_title: "Language",
+    settings_title: "Settings",
+    settings_tools: "Rendering tools",
+    close: "Close",
+    tools_in_settings: "Chrome and ffmpeg: in settings ⚙",
+    recent: "Recent",
+    recent_title: "Recently opened animations",
+    recent_empty: "No recent animation.",
+    recent_clear: "Clear the list",
     source: "Analysis",
     bar_label: "Animation",
     bar_empty: "No animation",
@@ -267,8 +291,6 @@ pub struct MotionTexts {
     pub models_loading: &'static str,
     pub models_unavailable: &'static str,
     pub outside_tauri: &'static str,
-    pub proxy_show: &'static str,
-    pub proxy_hide: &'static str,
     pub ai_url: &'static str,
     pub ai_key: &'static str,
     pub ai_key_placeholder: &'static str,
@@ -277,7 +299,6 @@ pub struct MotionTexts {
     pub thinking: &'static str,
     pub preview: &'static str,
     pub preview_empty: &'static str,
-    pub replay: &'static str,
     pub cancel: &'static str,
     pub failed: &'static str,
     pub cancelled: &'static str,
@@ -287,7 +308,6 @@ pub struct MotionTexts {
     pub ready_hint: &'static str,
     pub truncated: &'static str,
     pub save_failed: &'static str,
-    pub convert: &'static str,
     pub open_browser: &'static str,
     pub open_title: &'static str,
     pub reveal: &'static str,
@@ -331,6 +351,19 @@ pub struct MotionTexts {
     pub confirm_prompt: &'static str,
     pub sound_mute: &'static str,
     pub sound_unmute: &'static str,
+    pub brief_cleared: &'static str,
+    pub undo: &'static str,
+    pub versions: &'static str,
+    pub opened_file: &'static str,
+    pub restore: &'static str,
+    pub export_now: &'static str,
+    pub exporting_btn: &'static str,
+    pub export_settings: &'static str,
+    pub model_label: &'static str,
+    pub change: &'static str,
+    pub play: &'static str,
+    pub pause: &'static str,
+    pub timeline: &'static str,
     pub replay_title: &'static str,
     pub shortcut_run: &'static str,
     pub cost_real: &'static str,
@@ -356,8 +389,6 @@ pub static MOTION_FR: MotionTexts = MotionTexts {
     models_loading: "Interrogation du proxy…",
     models_unavailable: "Liste des modèles indisponible : saisissez l'identifiant (ex. anthropic/claude-sonnet-5.5).",
     outside_tauri: "Disponible uniquement dans l'application.",
-    proxy_show: "▸ Proxy IA",
-    proxy_hide: "▾ Proxy IA",
     ai_url: "URL du proxy OpenRouter",
     ai_key: "Clé du proxy (PROXY_API_KEYS)",
     ai_key_placeholder: "Vide si le proxy n'en exige pas",
@@ -366,7 +397,6 @@ pub static MOTION_FR: MotionTexts = MotionTexts {
     thinking: "Le modèle réfléchit…",
     preview: "Aperçu du motion design",
     preview_empty: "L'animation générée s'affichera ici",
-    replay: "↻ Rejouer",
     cancel: "Annuler",
     failed: "Échec de la génération",
     cancelled: "Génération annulée",
@@ -376,7 +406,6 @@ pub static MOTION_FR: MotionTexts = MotionTexts {
     ready_hint: "Le brief est envoyé à l'IA, qui écrit une animation HTML convertible en vidéo.",
     truncated: "Réponse coupée par la limite du modèle : l'animation est peut-être incomplète.",
     save_failed: "Enregistrement impossible",
-    convert: "Convertir en vidéo →",
     open_browser: "Ouvrir",
     open_title: "Ouvrir dans le navigateur",
     reveal: "Afficher",
@@ -420,7 +449,20 @@ pub static MOTION_FR: MotionTexts = MotionTexts {
     confirm_prompt: "Demande envoyée au modèle",
     sound_mute: "Couper le son de l'aperçu",
     sound_unmute: "Activer le son de l'aperçu",
-    replay_title: "Rejouer (Espace)",
+    brief_cleared: "Brief effacé.",
+    undo: "Annuler",
+    versions: "Versions",
+    opened_file: "Ouverte depuis un fichier",
+    restore: "Rétablir",
+    export_now: "Exporter la vidéo",
+    exporting_btn: "Export en cours…",
+    export_settings: "Réglages d'export →",
+    model_label: "Modèle :",
+    change: "Modifier",
+    play: "Lecture (Espace)",
+    pause: "Pause (Espace)",
+    timeline: "Position dans l'animation",
+    replay_title: "Revenir au début et rejouer",
     shortcut_run: "Ctrl+Entrée",
     cost_real: "Modèle et coût réel facturé pour cette version",
     music_remove: "Retirer",
@@ -445,8 +487,6 @@ pub static MOTION_EN: MotionTexts = MotionTexts {
     models_loading: "Querying the proxy…",
     models_unavailable: "Model list unavailable: type the id (e.g. anthropic/claude-sonnet-5.5).",
     outside_tauri: "Only available in the app.",
-    proxy_show: "▸ AI proxy",
-    proxy_hide: "▾ AI proxy",
     ai_url: "OpenRouter proxy URL",
     ai_key: "Proxy key (PROXY_API_KEYS)",
     ai_key_placeholder: "Empty if the proxy doesn't require one",
@@ -455,7 +495,6 @@ pub static MOTION_EN: MotionTexts = MotionTexts {
     thinking: "The model is thinking…",
     preview: "Motion design preview",
     preview_empty: "The generated animation will appear here",
-    replay: "↻ Replay",
     cancel: "Cancel",
     failed: "Generation failed",
     cancelled: "Generation cancelled",
@@ -465,7 +504,6 @@ pub static MOTION_EN: MotionTexts = MotionTexts {
     ready_hint: "The brief is sent to the AI, which writes an HTML animation ready to convert to video.",
     truncated: "Response cut off by the model's limit: the animation may be incomplete.",
     save_failed: "Could not save",
-    convert: "Convert to video →",
     open_browser: "Open",
     open_title: "Open in browser",
     reveal: "Show",
@@ -509,7 +547,20 @@ pub static MOTION_EN: MotionTexts = MotionTexts {
     confirm_prompt: "Request sent to the model",
     sound_mute: "Mute the preview",
     sound_unmute: "Unmute the preview",
-    replay_title: "Replay (Space)",
+    brief_cleared: "Brief cleared.",
+    undo: "Undo",
+    versions: "Versions",
+    opened_file: "Opened from a file",
+    restore: "Restore",
+    export_now: "Export the video",
+    exporting_btn: "Exporting…",
+    export_settings: "Export settings →",
+    model_label: "Model:",
+    change: "Change",
+    play: "Play (Space)",
+    pause: "Pause (Space)",
+    timeline: "Position in the animation",
+    replay_title: "Back to the start and replay",
     shortcut_run: "Ctrl+Enter",
     cost_real: "Model and actual cost billed for this version",
     music_remove: "Remove",
@@ -557,6 +608,53 @@ pub fn writing(lang: Lang, n: usize) -> String {
     }
 }
 
+pub fn exporting(lang: Lang, pct: u32) -> String {
+    match lang {
+        Lang::Fr => format!("Export {pct} %"),
+        Lang::En => format!("Exporting {pct}%"),
+    }
+}
+
+fn fmt_format(lang: Lang, w: u32, h: u32, d: f64) -> String {
+    let d = (d * 100.0).round() / 100.0;
+    match lang {
+        Lang::Fr => format!("{w}×{h} · {} s", format!("{d}").replace('.', ",")),
+        Lang::En => format!("{w}×{h} · {d} s"),
+    }
+}
+
+/// Format de l'onglet Motion design différent de l'animation affichée.
+pub fn format_changed(lang: Lang, w: u32, h: u32, d: f64) -> String {
+    let f = fmt_format(lang, w, h, d);
+    match lang {
+        Lang::Fr => format!("Différent de l'animation ({f}) : appliqué au prochain ajustement"),
+        Lang::En => format!("Differs from the animation ({f}): applied on the next adjustment"),
+    }
+}
+
+/// Format d'export différent de celui déclaré par l'animation.
+pub fn format_differs(lang: Lang, w: u32, h: u32, d: f64) -> String {
+    let f = fmt_format(lang, w, h, d);
+    match lang {
+        Lang::Fr => format!("Différent du format de l'animation ({f})"),
+        Lang::En => format!("Differs from the animation's format ({f})"),
+    }
+}
+
+/// Ancienneté lisible (« il y a 5 min »).
+pub fn ago(lang: Lang, secs: u64) -> String {
+    let (n, fr, en) = match secs {
+        0..=59 => return lang.pick("à l'instant".to_string(), "just now".to_string()),
+        60..=3599 => (secs / 60, "min", "min"),
+        3600..=86_399 => (secs / 3600, "h", "h"),
+        _ => (secs / 86_400, "j", "d"),
+    };
+    match lang {
+        Lang::Fr => format!("il y a {n} {fr}"),
+        Lang::En => format!("{n} {en} ago"),
+    }
+}
+
 pub fn music_removed(lang: Lang, name: &str) -> String {
     match lang {
         Lang::Fr => format!("Bande son retirée (renommée en « {name} »)."),
@@ -571,12 +669,6 @@ pub fn session_spent(lang: Lang, amount: &str) -> String {
     }
 }
 
-pub fn version_of(lang: Lang, i: usize, n: usize) -> String {
-    match lang {
-        Lang::Fr => format!("Version {i} / {n}"),
-        Lang::En => format!("Version {i} / {n}"),
-    }
-}
 
 pub fn texts(lang: Lang) -> &'static Texts {
     match lang {

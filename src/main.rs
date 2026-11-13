@@ -1,6 +1,7 @@
 mod app;
 mod i18n;
 mod motion;
+mod settings;
 mod tauri;
 
 fn main() {

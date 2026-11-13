@@ -15,15 +15,23 @@ The app has two tabs:
 
 1. **Motion design** (optional): a brief, typed or imported from a **PDF** or a **text** file, is sent to the AI
    through the [OpenRouter proxy](server/readme_openrouter.md). The AI writes an HTML animation at the chosen format and
-   duration, previewed right away. You can ask for adjustments (every version is kept and saved in `Videos/RustMotion`),
-   then send it to the conversion tab in one click.
+   duration, previewed right away in a player (play, pause, timeline) that uses the same virtual clock as the export:
+   what you see is what gets rendered. You can ask for adjustments (every version is kept and saved in
+   `Videos/RustMotion`), then export the video directly, or switch to the conversion tab to fine-tune it.
+   The actual cost billed is shown for each generation, along with the session total.
    A **soundtrack** can go with it: an imported audio file, or music composed by the AI
    (Google Lyria 3: $0.04 up to 30 s, $0.08 beyond), when the animation is created or later.
    It plays with the preview and is picked up automatically for the export.
 2. **Video conversion**: turns any HTML animation into a video (details below).
 
+The current animation is shared by both tabs, in a common bar (file, folder, recent, open, show, save).
+
 The proxy is expected at `http://127.0.0.1:9018/v1` by default; the URL, the proxy key (`PROXY_API_KEYS`) and the model
-are set in the tab and remembered. The OpenRouter key stays on the proxy.
+are set in the **Settings ⚙** panel of the header, together with the Chrome and ffmpeg paths, and remembered.
+The OpenRouter key stays on the proxy.
+
+Shortcuts: **Ctrl+Enter** generate or adjust (opens the confirmation), **Esc** cancel, **Space** play / pause,
+**Ctrl+O** open an animation, **Ctrl+S** save a copy.
 
 - Inputs: an `.html` file, a folder containing `index.html`, or an `http(s)` URL.
   Local files are served by a small built-in HTTP server, so ES modules, `fetch()`, fonts, Lottie JSON… all work.

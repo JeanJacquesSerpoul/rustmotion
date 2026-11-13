@@ -11,16 +11,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::PRESETS;
 use crate::i18n::{self, motion_texts};
+use crate::settings::{load, store, AiSettings};
 use crate::tauri::{self, invoke};
 
-const KEY_URL: &str = "rustmotion.ai.url";
-const KEY_MODEL: &str = "rustmotion.ai.model";
-const KEY_KEY: &str = "rustmotion.ai.key";
 const KEY_MUSIC_STYLE: &str = "rustmotion.music.style";
 const KEY_WITH_MUSIC: &str = "rustmotion.music.auto";
 const KEY_SOUND: &str = "rustmotion.preview.sound";
-const DEFAULT_URL: &str = "http://127.0.0.1:9018/v1";
-const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-5.5";
 
 #[derive(Clone, PartialEq)]
 enum Gen {
@@ -51,14 +47,6 @@ struct AiProgress {
     reasoning: usize,
     tail: String,
     elapsed_ms: u64,
-}
-
-/// Modèle proposé par le proxy, avec son tarif (USD par jeton) quand il est connu.
-#[derive(Deserialize, Clone)]
-struct ModelInfo {
-    id: String,
-    prompt: Option<f64>,
-    completion: Option<f64>,
 }
 
 /// Bande son à composer : modèle musical, prix fixe (USD) et demande envoyée.
@@ -169,6 +157,99 @@ fn file_name(p: &str) -> String {
     p.rsplit(['/', '\\']).next().unwrap_or(p).to_string()
 }
 
+// --- Lecteur de l'aperçu ------------------------------------------------------------------
+// L'aperçu tourne sous la même horloge virtuelle que l'export (`shim.js` du moteur) : ce qu'on
+// voit est ce qui sera rendu, et on peut mettre en pause ou se placer à n'importe quel instant.
+
+/// Horloge virtuelle du moteur (une seule source pour l'aperçu et le rendu).
+const SHIM: &str = include_str!("../crates/rustmotion-engine/src/shim.js");
+
+/// Pilote du lecteur, injecté après l'horloge : fait avancer le temps virtuel au rythme réel
+/// pendant la lecture, et dialogue avec l'application par `postMessage`.
+/// L'horloge ne recule pas : un retour en arrière est signalé (`rewind`) et l'aperçu est rechargé.
+const PLAYER: &str = r#"(() => {
+  const W = window, R = W.__rmReal, cfg = W.__rmPlayer;
+  let t = 0, playing = false, base = 0, origin = 0, lastPost = 0, ready = false, q = Promise.resolve();
+  const post = (m) => { try { parent.postMessage(Object.assign({ rm: 'player', token: cfg.token }, m), '*'); } catch (e) {} };
+  const seekTo = (sec) => (q = q.then(async () => {
+    sec = Math.min(Math.max(sec, t), cfg.dur);
+    try { await W.__rm.seek(sec * 1000); } catch (e) {}
+    t = sec;
+  }));
+  const status = (force) => {
+    const n = R.now();
+    if (force || n - lastPost > 80) { lastPost = n; post({ ev: 'time', t, playing }); }
+  };
+  const frame = async () => {
+    if (!playing) return;
+    const target = base + (R.now() - origin) / 1000;
+    if (target >= cfg.dur) { await seekTo(cfg.dur); playing = false; status(true); return; }
+    await seekTo(target);
+    status(false);
+    R.raf(frame);
+  };
+  const play = () => {
+    if (playing) return;
+    if (t >= cfg.dur - 0.001) { post({ ev: 'restart' }); return; }
+    playing = true; base = t; origin = R.now(); status(true); R.raf(frame);
+  };
+  const pause = () => { playing = false; status(true); };
+  W.addEventListener('message', async (e) => {
+    const d = e.data;
+    if (!d || d.rm !== 'cmd' || !ready) return;
+    if (d.cmd === 'play') play();
+    else if (d.cmd === 'pause') pause();
+    else if (d.cmd === 'seek') {
+      if (d.t < t - 0.0005) { post({ ev: 'rewind', t: d.t, playing }); return; }
+      const was = playing; playing = false;
+      await seekTo(d.t);
+      status(true);
+      if (was) play();
+    }
+  });
+  const start = async () => {
+    try { await W.__rm.init(false); } catch (e) {}
+    ready = true;
+    await seekTo(cfg.t);
+    if (cfg.play) play(); else status(true);
+  };
+  if (document.readyState === 'complete') start(); else W.addEventListener('load', start);
+})();"#;
+
+/// Fin de la balise ouvrante `<name …>` (pas `<header>` pour `head`), si elle existe.
+fn tag_end(lower: &str, name: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(i) = lower[from..].find(&format!("<{name}")) {
+        let at = from + i + name.len() + 1;
+        if lower[at..].starts_with(|c: char| c == '>' || c.is_ascii_whitespace()) {
+            return lower[at..].find('>').map(|e| at + e + 1);
+        }
+        from = at;
+    }
+    None
+}
+
+/// Document de l'aperçu : l'animation, précédée de l'horloge virtuelle et du pilote du lecteur
+/// (au tout début de `<head>`, pour passer avant les scripts de la page).
+fn player_doc(html: &str, start: f64, play: bool, duration: f64, token: u32) -> String {
+    let scripts = format!(
+        "<script>window.__rmReal={{raf:window.requestAnimationFrame.bind(window),now:performance.now.bind(performance)}};\
+         window.__rmPlayer={{t:{start},play:{play},dur:{dur},token:{token}}};</script>\
+         <script>{SHIM}</script><script>{PLAYER}</script>",
+        dur = duration.max(0.04)
+    );
+    let lower = html.to_ascii_lowercase();
+    let at = tag_end(&lower, "head").or_else(|| tag_end(&lower, "html")).or_else(|| tag_end(&lower, "!doctype")).unwrap_or(0);
+    format!("{}{scripts}{}", &html[..at], &html[at..])
+}
+
+/// Temps du lecteur : « 0:03.2 ».
+fn fmt_clock(t: f64) -> String {
+    let t = t.max(0.0);
+    let m = (t / 60.0).floor() as u64;
+    format!("{m}:{:04.1}", t - m as f64 * 60.0)
+}
+
 /// Début de la « demande » d'une animation ouverte depuis un fichier (elle n'a pas de brief).
 const IMPORTED: &str = "Existing animation";
 
@@ -200,20 +281,6 @@ pub struct SourceFormat {
     pub duration: Option<f64>,
 }
 
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
-}
-
-fn load(key: &str, default: &str) -> String {
-    storage().and_then(|s| s.get_item(key).ok().flatten()).unwrap_or_else(|| default.to_string())
-}
-
-fn store(key: &str, value: &str) {
-    if let Some(s) = storage() {
-        let _ = s.set_item(key, value);
-    }
-}
-
 fn fmt_secs(ms: u64) -> String {
     let s = ms / 1000;
     if s >= 60 {
@@ -232,21 +299,19 @@ pub fn motion_tab(
     active: Signal<bool>,
     dropped_doc: RwSignal<Option<String>>,
     dropped_audio: RwSignal<Option<String>>,
+    ai: AiSettings,
+    settings_open: RwSignal<bool>,
     source: Signal<String>,
     source_format: Signal<Option<SourceFormat>>,
     on_file: impl Fn(String) + Copy + Send + Sync + 'static,
     on_audio: impl Fn(String, String) + Copy + Send + Sync + 'static,
     on_convert: impl Fn() + Copy + Send + Sync + 'static,
+    on_export: impl Fn() + Copy + Send + Sync + 'static,
+    exporting: Signal<bool>,
+    export_status: Signal<String>,
 ) -> impl IntoView {
     let in_tauri = tauri::available();
     let m = move || motion_texts(lang.get());
-
-    // --- Réglages IA (mémorisés) ---------------------------------------------
-    let ai_url = RwSignal::new(load(KEY_URL, DEFAULT_URL));
-    let ai_model = RwSignal::new(load(KEY_MODEL, DEFAULT_MODEL));
-    let ai_key = RwSignal::new(load(KEY_KEY, ""));
-    let models = RwSignal::new(None::<Result<Vec<ModelInfo>, String>>);
-    let show_ai = RwSignal::new(false);
 
     // --- Brief et format -----------------------------------------------------
     let brief = RwSignal::new(String::new());
@@ -282,24 +347,6 @@ pub fn motion_tab(
     let music_running = move || matches!(music.get(), MusicGen::Running(_));
     // Le proxy ne traite qu'une génération à la fois (animation ou bande son).
     let busy = move || running() || music_running();
-
-    let refresh_models = move || {
-        if !in_tauri {
-            return;
-        }
-        #[derive(Serialize)]
-        struct A {
-            base_url: String,
-            api_key: Option<String>,
-        }
-        let key = ai_key.get_untracked();
-        let a = A { base_url: ai_url.get_untracked(), api_key: (!key.trim().is_empty()).then_some(key) };
-        models.set(None);
-        spawn_local(async move {
-            models.set(Some(invoke::<_, Vec<ModelInfo>>("ai_models", &a).await));
-        });
-    };
-    refresh_models();
 
     let load_file = move |path: String| {
         #[derive(Serialize)]
@@ -422,6 +469,38 @@ pub fn motion_tab(
         path
     });
 
+    // Effacer le brief reste réversible quelques secondes (bouton « Annuler »).
+    let cleared = RwSignal::new(None::<(String, Option<String>)>);
+    let clear_gen = StoredValue::new(0u32);
+    let clear_brief = move || {
+        cleared.set(Some((brief.get_untracked(), brief_file.get_untracked())));
+        brief.set(String::new());
+        brief_file.set(None);
+        clear_gen.update_value(|g| *g += 1);
+        let g = clear_gen.get_value();
+        set_timeout(
+            move || {
+                if clear_gen.get_value() == g {
+                    cleared.set(None);
+                }
+            },
+            std::time::Duration::from_secs(8),
+        );
+    };
+    let undo_clear = move || {
+        if let Some((text, file)) = cleared.get_untracked() {
+            brief.set(text);
+            brief_file.set(file);
+        }
+        cleared.set(None);
+    };
+    // Une nouvelle saisie rend l'annulation sans objet.
+    Effect::new(move |_| {
+        if !brief.with(String::is_empty) {
+            cleared.set(None);
+        }
+    });
+
     let pick_brief = move || {
         #[derive(Serialize)]
         struct A {
@@ -432,11 +511,6 @@ pub fn motion_tab(
                 load_file(p);
             }
         });
-    };
-
-    let ai_auth = move || {
-        let key = ai_key.get_untracked();
-        (ai_url.get_untracked(), (!key.trim().is_empty()).then_some(key))
     };
 
     // Coût réel d'un appel : ajouté au cumul de la session.
@@ -511,7 +585,7 @@ pub fn motion_tab(
         struct A {
             req: Req,
         }
-        let (base_url, api_key) = ai_auth();
+        let (base_url, api_key) = ai.auth();
         let a = A { req: Req { base_url, api_key, model: plan.model, prompt: plan.prompt, html_path: html.clone() } };
         music.set(MusicGen::Running(0));
         let tick = set_interval_with_handle(
@@ -560,8 +634,8 @@ pub fn motion_tab(
         struct A {
             req: Req,
         }
-        let (base_url, api_key) = ai_auth();
-        let a = A { req: Req { base_url, api_key, model: ai_model.get_untracked(), messages } };
+        let (base_url, api_key) = ai.auth();
+        let a = A { req: Req { base_url, api_key, model: ai.model.get_untracked(), messages } };
         let (w, h, d) = (width.get_untracked(), height.get_untracked(), duration.get_untracked());
         gen.set(Gen::Running);
         progress.set(None);
@@ -622,9 +696,9 @@ pub fn motion_tab(
                             output_tokens: usize,
                             music: Option<MusicPlan>,
                             carry_audio: Option<String>| {
-        let model = ai_model.get_untracked().trim().to_string();
+        let model = ai.model.get_untracked().trim().to_string();
         let input_tokens = estimate_tokens(messages.iter().map(|m| m.content.chars().count()).sum());
-        let price = models.with_untracked(|r| {
+        let price = ai.models.with_untracked(|r| {
             r.as_ref().and_then(|r| r.as_ref().ok()).and_then(|list| list.iter().find(|i| i.id == model)).map(|i| (i.prompt, i.completion))
         });
         let cost = match price {
@@ -660,7 +734,7 @@ pub fn motion_tab(
         width.track();
         height.track();
         duration.track();
-        ai_model.track();
+        ai.model.track();
         music_style.track();
         with_music.track();
         current.track();
@@ -809,10 +883,9 @@ pub fn motion_tab(
         }
         spawn_local(async move {
             if let Ok(url) = invoke::<_, String>("read_audio", &A { path: path.clone() }).await {
+                // Le son rejoint l'animation au prochain point de synchronisation du lecteur.
                 if version_audio.get_untracked().as_deref() == Some(path.as_str()) {
                     audio_src.set(Some(url));
-                    // Relance l'animation pour qu'image et son partent ensemble.
-                    replay.update(|r| *r += 1);
                 }
             }
         });
@@ -822,29 +895,119 @@ pub fn motion_tab(
             let _ = el.pause();
         }
     };
-    let play_audio = move || {
+
+    // --- Lecteur : l'animation tourne sous l'horloge virtuelle du moteur (comme à l'export).
+    // `replay` sert de jeton : chaque valeur correspond à un chargement de l'aperçu.
+    let frame_ref = NodeRef::<html::Iframe>::new();
+    let player_t = RwSignal::new(0.0f64);
+    let player_playing = RwSignal::new(false);
+    let scrubbing = RwSignal::new(false);
+    // Position et lecture au prochain chargement (après un retour en arrière, par exemple).
+    let player_start = StoredValue::new((0.0f64, true));
+    // Version affichée au dernier chargement : une autre version repart de zéro.
+    let player_key = StoredValue::new(None::<(usize, usize, Option<String>)>);
+
+    // Le son suit l'image : lancé, recalé ou arrêté à chaque nouvelle du lecteur.
+    let sync_audio = move |t: f64, playing: bool| {
         let Some(el) = audio_ref.get_untracked() else { return };
-        let _ = el.pause();
-        el.set_current_time(0.0);
-        if sound_on.get_untracked() && audio_src.with_untracked(Option::is_some) && active.get_untracked() {
+        let has = audio_src.with_untracked(Option::is_some);
+        if !(playing && has && sound_on.get_untracked() && active.get_untracked()) {
+            let _ = el.pause();
+            if has {
+                el.set_current_time(t);
+            }
+            return;
+        }
+        if el.paused() {
+            el.set_current_time(t);
             let _ = el.play();
+        } else if (el.current_time() - t).abs() > 0.25 {
+            el.set_current_time(t);
         }
     };
-    // Pas de son pendant une génération, ni quand l'onglet est masqué.
+    let send = move |cmd: &'static str, t: f64| {
+        #[derive(Serialize)]
+        struct Cmd {
+            rm: &'static str,
+            cmd: &'static str,
+            t: f64,
+        }
+        let Some(win) = frame_ref.get_untracked().and_then(|f| f.content_window()) else { return };
+        if let Ok(msg) = serde_wasm_bindgen::to_value(&Cmd { rm: "cmd", cmd, t }) {
+            let _ = win.post_message(&msg, "*");
+        }
+    };
+    // Recharge l'aperçu à la position `t` (l'horloge virtuelle ne sait pas reculer).
+    let restart = move |t: f64, play: bool| {
+        player_start.set_value((t, play));
+        player_t.set(t);
+        replay.update(|r| *r += 1);
+    };
+    let rewind_gen = StoredValue::new(0u32);
+    let _ = window_event_listener(leptos::ev::message, move |ev| {
+        #[derive(Deserialize)]
+        struct Msg {
+            rm: String,
+            token: u32,
+            ev: String,
+            #[serde(default)]
+            t: f64,
+            #[serde(default)]
+            playing: bool,
+        }
+        let Ok(msg) = serde_wasm_bindgen::from_value::<Msg>(ev.data()) else { return };
+        if msg.rm != "player" || msg.token != replay.get_untracked() {
+            return;
+        }
+        match msg.ev.as_str() {
+            "time" => {
+                if !scrubbing.get_untracked() {
+                    player_t.set(msg.t);
+                }
+                player_playing.set(msg.playing);
+                sync_audio(msg.t, msg.playing);
+            }
+            "restart" => restart(0.0, true),
+            "rewind" => {
+                // Pendant un glissement de la timeline, seul le dernier retour en arrière recharge.
+                rewind_gen.update_value(|g| *g += 1);
+                let g = rewind_gen.get_value();
+                let (t, playing) = (msg.t, msg.playing);
+                set_timeout(
+                    move || {
+                        if rewind_gen.get_value() == g {
+                            restart(t, playing);
+                        }
+                    },
+                    std::time::Duration::from_millis(120),
+                );
+            }
+            _ => {}
+        }
+    });
+    let toggle_play = move || {
+        if player_playing.get_untracked() {
+            send("pause", 0.0);
+        } else {
+            send("play", 0.0);
+        }
+    };
+    let seek = move |t: f64| send("seek", t);
+
+    // Pas de son pendant une génération, ni quand l'onglet est masqué (la lecture s'arrête aussi).
     Effect::new(move |_| {
         if running() || !active.get() {
             stop_audio();
+            if player_playing.get_untracked() {
+                send("pause", 0.0);
+            }
         }
     });
     let toggle_sound = move || {
         let on = !sound_on.get_untracked();
         sound_on.set(on);
         store(KEY_SOUND, if on { "1" } else { "0" });
-        if on {
-            replay.update(|r| *r += 1);
-        } else {
-            stop_audio();
-        }
+        sync_audio(player_t.get_untracked(), on && player_playing.get_untracked());
     };
 
     let set_duration = move |s: String| {
@@ -854,7 +1017,7 @@ pub fn motion_tab(
             }
         }
     };
-    let can_call = move || in_tauri && !busy() && !ai_model.get().trim().is_empty();
+    let can_call = move || in_tauri && !busy() && !ai.model.get().trim().is_empty();
     let can_generate = move || can_call() && !brief.get().trim().is_empty();
     let can_refine = move || can_call() && version().is_some() && !refine.get().trim().is_empty();
     // Bande son : il faut une animation enregistrée sur le disque.
@@ -890,7 +1053,7 @@ pub fn motion_tab(
             }
         } else if key == " " && !typing && !ev.ctrl_key() && version().is_some() && !running() {
             ev.prevent_default();
-            replay.update(|r| *r += 1);
+            toggle_play();
         }
     });
 
@@ -922,11 +1085,16 @@ pub fn motion_tab(
                                     <span class="hint">{i18n::chars(l, n)}</span>
                                 }.into_any(),
                                 None if n > 0 => view! { <span class="hint">{i18n::chars(l, n)}</span> }.into_any(),
+                                // Brief tout juste effacé : on peut le récupérer quelques secondes.
+                                None if cleared.with(Option::is_some) => view! {
+                                    <span class="hint">{motion_texts(l).brief_cleared}</span>
+                                    <button class="link undo" on:click=move |_| undo_clear()>{motion_texts(l).undo}</button>
+                                }.into_any(),
                                 None => view! { <span class="hint">{motion_texts(l).import_hint}</span> }.into_any(),
                             }
                         }}
                         <Show when=move || !brief.get().is_empty()>
-                            <button class="link push" on:click=move |_| { brief.set(String::new()); brief_file.set(None); }>
+                            <button class="link push" on:click=move |_| clear_brief()>
                                 {move || m().clear}
                             </button>
                         </Show>
@@ -961,6 +1129,17 @@ pub fn motion_tab(
                                 on:change=move |ev| set_duration(event_target_value(&ev)) />
                         </div>
                     </div>
+                    // Format modifié par rapport à l'animation affichée : appliqué au prochain ajustement.
+                    {move || version().filter(|v| {
+                        (width.get(), height.get()) != (v.width, v.height) || (duration.get() - v.duration).abs() > 1e-6
+                    }).map(|v| view! {
+                        <div class="format-diff">
+                            <span class="chip warn">{i18n::format_changed(lang.get(), v.width, v.height, v.duration)}</span>
+                            <button class="link" on:click=move |_| { width.set(v.width); height.set(v.height); duration.set(v.duration); }>
+                                {move || m().restore}
+                            </button>
+                        </div>
+                    })}
                 </div>
 
                 // ---------------- Bande son
@@ -1064,68 +1243,6 @@ pub fn motion_tab(
                     </label>
                 </div>
 
-                // ---------------- Modèle IA
-                <div class="card">
-                    <div class="card-h">
-                        <span class="step">"4"</span><h2>{move || m().ai}</h2>
-                        <span class="card-meta" class:spent=move || { spent.get() > 0.0 }>{move || {
-                            let s = spent.get();
-                            if s > 0.0 { i18n::session_spent(lang.get(), &fmt_cost(lang.get(), s)) } else { ai_model.get() }
-                        }}</span>
-                    </div>
-                    <div class="field">
-                        <label class="lbl" for="ai-model">{move || m().ai_model}</label>
-                        <input id="ai-model" type="text" list="ai-models" spellcheck="false" prop:value=move || ai_model.get()
-                            on:change=move |ev| {
-                                let v = event_target_value(&ev).trim().to_string();
-                                store(KEY_MODEL, &v);
-                                ai_model.set(v);
-                            } />
-                        <datalist id="ai-models">
-                            {move || models.get().and_then(|r| r.ok()).unwrap_or_default().into_iter()
-                                .map(|i| view! { <option value=i.id></option> }).collect_view()}
-                        </datalist>
-                        <p class="hint small">{move || {
-                            let l = lang.get();
-                            match models.get() {
-                                None if in_tauri => motion_texts(l).models_loading.to_string(),
-                                None => motion_texts(l).outside_tauri.to_string(),
-                                Some(Ok(list)) if !list.is_empty() => i18n::models_found(l, list.len()),
-                                Some(_) => motion_texts(l).models_unavailable.to_string(),
-                            }
-                        }}</p>
-                    </div>
-                    <button class="link" on:click=move |_| show_ai.update(|v| *v = !*v)>
-                        {move || if show_ai.get() { m().proxy_hide } else { m().proxy_show }}
-                    </button>
-                    <Show when=move || show_ai.get()>
-                        <div class="advanced">
-                            <div class="field">
-                                <label class="lbl" for="ai-url">{move || m().ai_url}</label>
-                                <input id="ai-url" type="text" spellcheck="false" prop:value=move || ai_url.get()
-                                    on:change=move |ev| {
-                                        let v = event_target_value(&ev).trim().to_string();
-                                        let v = if v.is_empty() { DEFAULT_URL.to_string() } else { v };
-                                        store(KEY_URL, &v);
-                                        ai_url.set(v);
-                                        refresh_models();
-                                    } />
-                            </div>
-                            <div class="field">
-                                <label class="lbl" for="ai-key">{move || m().ai_key}</label>
-                                <input id="ai-key" type="password" autocomplete="off" placeholder=move || m().ai_key_placeholder
-                                    prop:value=move || ai_key.get()
-                                    on:change=move |ev| {
-                                        let v = event_target_value(&ev).trim().to_string();
-                                        store(KEY_KEY, &v);
-                                        ai_key.set(v);
-                                        refresh_models();
-                                    } />
-                            </div>
-                            <p class="hint small">{move || m().proxy_hint}</p>
-                        </div>
-                    </Show>
-                </div>
             </section>
 
             // ---------------- Aperçu + génération
@@ -1153,16 +1270,25 @@ pub fn motion_tab(
                                     </div>
                                 }.into_any();
                             }
-                            // Leptos réutilise l'iframe et ne réécrit `srcdoc` que si la valeur change :
-                            // le numéro de lecture, en commentaire final, force le rechargement (rejeu).
-                            let run = replay.get();
+                            // Chaque chargement porte son jeton (`replay`) : Leptos ne réécrit `srcdoc` que si
+                            // le document change, et les messages d'un ancien chargement sont ignorés.
+                            let token = replay.get();
                             match version() {
                                 Some(v) => {
                                     let (w, h) = (v.width as f64, v.height as f64);
-                                    let doc = format!("{}\n<!-- {run} -->", v.html);
+                                    // Une autre version repart du début ; sinon, reprise à la position demandée.
+                                    let key = (current.get_untracked(), versions.with_untracked(Vec::len), v.path.clone());
+                                    let (t0, play) = if player_key.with_value(|k| k.as_ref() != Some(&key)) {
+                                        player_key.set_value(Some(key));
+                                        player_start.set_value((0.0, true));
+                                        (0.0, true)
+                                    } else {
+                                        player_start.get_value()
+                                    };
+                                    let doc = player_doc(&v.html, t0, play, v.duration, token);
                                     view! {
-                                        <iframe class="mframe" sandbox="allow-scripts" srcdoc=doc
-                                            title=motion_texts(l).preview on:load=move |_| play_audio()
+                                        <iframe class="mframe" sandbox="allow-scripts" srcdoc=doc node_ref=frame_ref
+                                            title=motion_texts(l).preview
                                             style=move || {
                                                 // Ajusté et centré : le cadre peut être plafonné en hauteur (formats verticaux).
                                                 let (cw, ch) = stage_size.get();
@@ -1193,8 +1319,31 @@ pub fn motion_tab(
                             }
                         }></audio>
                     <Show when=move || version().is_some() && !running()>
-                        <div class="row">
-                            <button class="btn" title=move || m().replay_title on:click=move |_| replay.update(|r| *r += 1)>{move || m().replay}</button>
+                        // Lecteur : lecture / pause, position, temps, retour au début, son.
+                        <div class="player">
+                            <button class="btn pp" aria-pressed=move || player_playing.get().to_string()
+                                title=move || if player_playing.get() { m().pause } else { m().play }
+                                on:click=move |_| toggle_play()>
+                                {move || if player_playing.get() { "❚❚" } else { "▶" }}
+                            </button>
+                            <input type="range" class="timeline" min="0" step="0.01" aria-label=move || m().timeline
+                                max=move || version().map(|v| v.duration).unwrap_or(1.0)
+                                prop:value=move || player_t.get()
+                                style=move || {
+                                    let d = version().map(|v| v.duration).unwrap_or(1.0).max(0.001);
+                                    format!("--p:{:.3}%", (player_t.get() / d * 100.0).clamp(0.0, 100.0))
+                                }
+                                on:input=move |ev| {
+                                    if let Ok(t) = event_target_value(&ev).parse::<f64>() {
+                                        scrubbing.set(true);
+                                        player_t.set(t);
+                                        seek(t);
+                                    }
+                                }
+                                on:change=move |_| scrubbing.set(false) />
+                            <span class="ptime">{move || format!("{} / {}",
+                                fmt_clock(player_t.get()), fmt_clock(version().map(|v| v.duration).unwrap_or(0.0)))}</span>
+                            <button class="btn ghost" title=move || m().replay_title on:click=move |_| restart(0.0, true)>"↻"</button>
                             <Show when=move || audio_src.with(Option::is_some)>
                                 <button class="btn ghost sound" class:off=move || !sound_on.get()
                                     title=move || if sound_on.get() { m().sound_mute } else { m().sound_unmute }
@@ -1203,15 +1352,32 @@ pub fn motion_tab(
                                     "♪"
                                 </button>
                             </Show>
+                        </div>
+                        <div class="row">
+                            // Bande de versions : la demande de chacune en infobulle, ♪ si elle a une bande son.
                             {move || {
-                                let n = versions.with(Vec::len);
-                                (n > 1).then(|| view! {
-                                    <div class="versions">
-                                        <button class="btn ghost" disabled=move || current.get() == 0
-                                            on:click=move |_| current.update(|c| *c = c.saturating_sub(1))>"‹"</button>
-                                        <span>{move || i18n::version_of(lang.get(), current.get() + 1, versions.with(Vec::len))}</span>
-                                        <button class="btn ghost" disabled=move || { current.get() + 1 >= versions.with(Vec::len) }
-                                            on:click=move |_| current.update(|c| *c += 1)>"›"</button>
+                                let l = lang.get();
+                                let list = versions.get();
+                                (list.len() > 1).then(|| view! {
+                                    <div class="versions" role="tablist" aria-label=motion_texts(l).versions>
+                                        {list.into_iter().enumerate().map(|(i, v)| {
+                                            let mut tip = if v.request.starts_with(IMPORTED) {
+                                                motion_texts(l).opened_file.to_string()
+                                            } else {
+                                                clip_text(&v.request, 220)
+                                            };
+                                            if let Some(c) = v.cost {
+                                                tip.push_str(&format!("\n{}", fmt_cost(l, c)));
+                                            }
+                                            view! {
+                                                <button class="vchip" role="tab" class:active=move || current.get() == i
+                                                    aria-selected=move || (current.get() == i).to_string()
+                                                    title=tip on:click=move |_| current.set(i)>
+                                                    {format!("v{}", i + 1)}
+                                                    {v.audio.is_some().then(|| view! { <i>"♪"</i> })}
+                                                </button>
+                                            }
+                                        }).collect_view()}
                                     </div>
                                 })
                             }}
@@ -1226,6 +1392,16 @@ pub fn motion_tab(
                 </div>
 
                 <div class="card render-card">
+                    // Modèle utilisé (modifiable dans les réglages) et dépense réelle de la session.
+                    <div class="model-line">
+                        <span class="model-name" title=move || ai.model.get()>
+                            {move || m().model_label}" "<b>{move || ai.model.get()}</b>
+                        </span>
+                        <Show when=move || { spent.get() > 0.0 }>
+                            <span class="spent">{move || i18n::session_spent(lang.get(), &fmt_cost(lang.get(), spent.get()))}</span>
+                        </Show>
+                        <button class="link" on:click=move |_| settings_open.set(true)>{move || m().change}</button>
+                    </div>
                     {move || {
                         let l = lang.get();
                         let tx = motion_texts(l);
@@ -1278,7 +1454,7 @@ pub fn motion_tab(
                                     let tx = motion_texts(lang.get());
                                     if !in_tauri { tx.outside_tauri }
                                     else if brief.get().trim().is_empty() { tx.need_brief }
-                                    else if ai_model.get().trim().is_empty() { tx.need_model }
+                                    else if ai.model.get().trim().is_empty() { tx.need_model }
                                     else { tx.ready_hint }
                                 }}</p>
                             }.into_any(),
@@ -1289,9 +1465,15 @@ pub fn motion_tab(
                                     {v.truncated.then(|| view! { <div class="result warn"><strong>{tx.truncated}</strong></div> })}
                                     {(!saved).then(|| view! { <div class="result err"><strong>{tx.save_failed}</strong>
                                         <pre>{save_error.get().unwrap_or_default()}</pre></div> })}
-                                    <button class="btn primary big wide" disabled=!saved on:click=move |_| on_convert()>
-                                        {tx.convert}
+                                    // Export direct avec les réglages courants ; l'onglet Conversion pour les ajuster.
+                                    <button class="btn primary big wide" disabled=move || !saved || exporting.get()
+                                        on:click=move |_| on_export()>
+                                        {move || if exporting.get() { m().exporting_btn } else { m().export_now }}
                                     </button>
+                                    <p class="hint center export-line">
+                                        <span>{move || export_status.get()}</span>
+                                        <button class="link" on:click=move |_| on_convert()>{tx.export_settings}</button>
+                                    </p>
                                     <div class="refine">
                                         <label class="lbl" for="refine">{tx.refine}</label>
                                         <textarea id="refine" rows="3" placeholder=tx.refine_placeholder

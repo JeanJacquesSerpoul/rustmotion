@@ -15,15 +15,24 @@ L'application a deux onglets :
 
 1. **Motion design** (optionnel) : un brief, saisi ou importé depuis un **PDF** ou un fichier **texte**, est envoyé à l'IA
    via le [proxy OpenRouter](server/readme_openrouter.md). L'IA écrit une animation HTML au format et à la durée choisis,
-   prévisualisée aussitôt. On peut demander des ajustements (chaque version est conservée et enregistrée dans
-   `Vidéos/RustMotion`), puis l'envoyer d'un clic à l'onglet de conversion.
+   prévisualisée aussitôt dans un lecteur (lecture, pause, timeline) qui utilise la même horloge virtuelle que l'export :
+   ce qu'on voit est ce qui sera rendu. On peut demander des ajustements (chaque version est conservée et enregistrée
+   dans `Vidéos/RustMotion`), puis exporter la vidéo directement, ou passer à l'onglet de conversion pour la régler.
+   Le coût réellement facturé s'affiche pour chaque génération, avec le total de la session.
    Une **bande son** peut l'accompagner : un fichier audio importé, ou une musique composée par l'IA
    (Google Lyria 3 : 0,04 $ jusqu'à 30 s, 0,08 $ au-delà), à la création de l'animation ou plus tard.
    Elle est jouée avec l'aperçu et reprise automatiquement à l'export.
 2. **Conversion vidéo** : transforme n'importe quelle animation HTML en vidéo (détails ci-dessous).
 
+L'animation courante est partagée par les deux onglets, dans une barre commune (fichier, dossier, récents, ouvrir,
+afficher, sauvegarder).
+
 Le proxy est attendu par défaut sur `http://127.0.0.1:9018/v1` ; l'URL, la clé du proxy (`PROXY_API_KEYS`) et le modèle
-se règlent dans l'onglet et sont mémorisés. La clé OpenRouter reste sur le proxy.
+se règlent dans le panneau **Réglages ⚙** de l'en-tête, avec les chemins de Chrome et de ffmpeg, et sont mémorisés.
+La clé OpenRouter reste sur le proxy.
+
+Raccourcis : **Ctrl+Entrée** générer ou ajuster (ouvre la confirmation), **Échap** annuler, **Espace** lecture / pause,
+**Ctrl+O** ouvrir une animation, **Ctrl+S** en sauvegarder une copie.
 
 - Sources : fichier `.html`, dossier contenant `index.html`, ou URL `http(s)`.
   Les fichiers locaux sont servis par un petit serveur HTTP intégré : modules ES, `fetch()`, polices, JSON Lottie… fonctionnent.

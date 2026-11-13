@@ -1176,7 +1176,7 @@ pub fn motion_tab(
                 // ---------------- Brief
                 <div class="card">
                     <div class="card-h"><span class="step">"1"</span><h2>{move || m().brief}</h2></div>
-                    <textarea id="brief" class="brief" rows="10" placeholder=move || m().brief_placeholder
+                    <textarea id="brief" class="brief" rows="4" placeholder=move || m().brief_placeholder
                         prop:value=move || brief.get()
                         on:input=move |ev| { brief.set(event_target_value(&ev)); brief_file.set(None); } />
                     <div class="row">
@@ -1277,61 +1277,60 @@ pub fn motion_tab(
 
                 // ---------------- Bande son
                 <div class="card">
+                    // En-tête : titre, puis l'état de la bande son de l'animation affichée.
                     <div class="card-h">
                         <span class="step">"3"</span><h2>{move || m().music}</h2>
-                        <span class="card-meta">{move || match music_engine.get() {
-                            MusicEngine::Lyria => music_label(music_model(version().map(|v| v.duration).unwrap_or(duration.get())).0).to_string(),
-                            MusicEngine::Same => ai.model.get(),
-                        }}</span>
-                    </div>
-                    // État : bande son de l'animation affichée, composition en cours, erreur.
-                    <div class="music-state">
-                        {move || {
-                            let l = lang.get();
-                            let tx = motion_texts(l);
-                            match music.get() {
-                                MusicGen::Running(s) => view! {
-                                    <span class="chip"><span class="spin"></span>{tx.music_running}<em>{fmt_secs(s as u64 * 1000)}</em></span>
-                                    <button class="btn ghost icon small push" title=tx.cancel aria-label=tx.cancel
-                                        on:click=move |_| cancel()>{icon(Icon::Close)}</button>
-                                }.into_any(),
-                                state => {
-                                    let current_audio = version().and_then(|v| v.audio);
-                                    view! {
-                                        {match current_audio {
-                                            Some(a) => {
-                                                let cost = version().and_then(|v| v.audio_cost)
-                                                    .map(|c| format!(" · {}", fmt_cost(l, c))).unwrap_or_default();
-                                                view! {
-                                                    <span class="chip ok music-file" title=a.clone()>"♪ "{file_name(&a)}{cost}</span>
-                                                    <button class="btn ghost icon small push" title=format!("{} — {}", tx.music_remove, tx.music_remove_title)
-                                                        aria-label=tx.music_remove disabled=move || busy()
-                                                        on:click=move |_| detach()>{icon(Icon::Trash)}</button>
-                                                }.into_any()
-                                            }
-                                            None if version().is_some() => view! { <span class="hint">{tx.music_none}</span> }.into_any(),
-                                            None => view! { <span class="hint">{tx.music_need_anim}</span> }.into_any(),
-                                        }}
-                                        {match state {
-                                            MusicGen::Error(e) => Some(view! { <div class="result err"><strong>{tx.music_failed}</strong><pre>{e}</pre></div> }.into_any()),
-                                            MusicGen::Cancelled => Some(view! { <span class="hint">{tx.music_cancelled}</span> }.into_any()),
-                                            MusicGen::Removed(name) => Some(view! { <span class="hint">{i18n::music_removed(l, &name)}</span> }.into_any()),
-                                            _ => None,
-                                        }}
-                                    }.into_any()
+                        <div class="music-state">
+                            {move || {
+                                let l = lang.get();
+                                let tx = motion_texts(l);
+                                if let MusicGen::Running(s) = music.get() {
+                                    return view! {
+                                        <span class="chip"><span class="spin"></span>{tx.music_running}<em>{fmt_secs(s as u64 * 1000)}</em></span>
+                                        <button class="btn ghost icon small" title=tx.cancel aria-label=tx.cancel
+                                            on:click=move |_| cancel()>{icon(Icon::Close)}</button>
+                                    }.into_any();
                                 }
-                            }
-                        }}
+                                match version().and_then(|v| v.audio) {
+                                    Some(a) => {
+                                        let cost = version().and_then(|v| v.audio_cost)
+                                            .map(|c| format!(" · {}", fmt_cost(l, c))).unwrap_or_default();
+                                        view! {
+                                            <span class="chip ok music-file" title=a.clone()>"♪ "{file_name(&a)}{cost}</span>
+                                            <button class="btn ghost icon small" title=format!("{} — {}", tx.music_remove, tx.music_remove_title)
+                                                aria-label=tx.music_remove disabled=move || busy()
+                                                on:click=move |_| detach()>{icon(Icon::Trash)}</button>
+                                        }.into_any()
+                                    }
+                                    None if version().is_some() => view! { <span class="hint">{tx.music_none}</span> }.into_any(),
+                                    None => view! { <span class="hint">{tx.music_need_anim}</span> }.into_any(),
+                                }
+                            }}
+                        </div>
                     </div>
+                    // Message ponctuel : échec, annulation, bande son retirée.
+                    {move || {
+                        let l = lang.get();
+                        let tx = motion_texts(l);
+                        match music.get() {
+                            MusicGen::Error(e) => Some(view! { <div class="result err"><strong>{tx.music_failed}</strong><pre>{e}</pre></div> }.into_any()),
+                            MusicGen::Cancelled => Some(view! { <p class="hint">{tx.music_cancelled}</p> }.into_any()),
+                            MusicGen::Removed(name) => Some(view! { <p class="hint">{i18n::music_removed(l, &name)}</p> }.into_any()),
+                            _ => None,
+                        }
+                    }}
                     // Qui compose : le modèle de l'animation (code audio synchronisé) ou Lyria 3 (musique réaliste).
                     <div class="seg tight engine" role="radiogroup" aria-label=move || m().music_engine>
                         {[MusicEngine::Same, MusicEngine::Lyria].into_iter().map(|e| view! {
                             <button class="pill" role="radio" class:active=move || music_engine.get() == e
                                 aria-checked=move || (music_engine.get() == e).to_string()
                                 disabled=move || music_running()
+                                title=move || match e {
+                                    MusicEngine::Same => format!("{} — {}", m().engine_same_hint, ai.model.get()),
+                                    MusicEngine::Lyria => m().engine_lyria_hint.to_string(),
+                                }
                                 on:click=move |_| { music_engine.set(e); store(KEY_MUSIC_ENGINE, e.key()); }>
                                 <b>{move || if e == MusicEngine::Same { m().engine_same } else { m().engine_lyria }}</b>
-                                <small>{move || if e == MusicEngine::Same { m().engine_same_hint } else { m().engine_lyria_hint }}</small>
                             </button>
                         }).collect_view()}
                     </div>
@@ -1374,8 +1373,9 @@ pub fn motion_tab(
                         </button>
                     </div>
                     <div class="field">
-                        <label class="lbl" for="music-style">{move || m().music_style}</label>
-                        <input id="music-style" type="text" spellcheck="false" placeholder=move || m().music_style_placeholder
+                        <input id="music-style" type="text" spellcheck="false" aria-label=move || m().music_style
+                            title=move || m().music_style
+                            placeholder=move || format!("{} — {}", m().music_style, m().music_style_placeholder)
                             prop:value=move || music_style.get()
                             on:change=move |ev| {
                                 let v = event_target_value(&ev).trim().to_string();
@@ -1633,7 +1633,7 @@ pub fn motion_tab(
                                     </p>
                                     <div class="refine">
                                         <label class="lbl" for="refine">{tx.refine}</label>
-                                        <textarea id="refine" rows="3" placeholder=tx.refine_placeholder
+                                        <textarea id="refine" rows="2" placeholder=tx.refine_placeholder
                                             prop:value=move || refine.get()
                                             on:input=move |ev| refine.set(event_target_value(&ev)) />
                                         <div class="row">

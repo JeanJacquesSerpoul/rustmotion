@@ -778,12 +778,11 @@ pub fn App() -> impl IntoView {
                                 })
                             }}
                         </div>
+                        // Sans animation, le texte d'exemple du champ tient lieu d'aide (détail en infobulle).
                         <input class="fb-path" type="text" spellcheck="false" placeholder=move || t().path_placeholder
-                            title=move || input.get() prop:value=move || input.get() disabled=rendering
+                            title=move || if source_path().is_empty() { t().bar_hint.to_string() } else { input.get() }
+                            prop:value=move || input.get() disabled=rendering
                             on:change=move |ev| set_input(event_target_value(&ev)) />
-                        <Show when=move || source_path().is_empty()>
-                            <p class="fb-hint">{move || t().bar_hint}</p>
-                        </Show>
                     </div>
                     <div class="fb-actions">
                         <div class="fb-group">

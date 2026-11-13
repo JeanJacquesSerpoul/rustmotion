@@ -101,14 +101,14 @@ button.badge:hover { border-color: var(--line-strong); color: var(--text); }
 /* ---------- Grille */
 .grid {
   flex: 1; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(340px, 1fr);
-  gap: 20px; padding: 16px 28px 32px; max-width: 1500px; width: 100%; margin: 0 auto;
+  gap: 20px; padding: 16px 28px 20px; max-width: 1500px; width: 100%; margin: 0 auto;
 }
-.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .side { position: sticky; top: 84px; align-self: start; }
 
 .card {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-panel);
-  padding: 18px 20px; display: flex; flex-direction: column; gap: 12px;
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 12px;
 }
 .card-h { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
 .card-h h2 { margin: 0; font-size: 14.5px; font-weight: 600; }
@@ -169,7 +169,7 @@ input:disabled { color: var(--muted); border-style: dashed; cursor: not-allowed;
 .link:hover:not(:disabled) { color: var(--text); }
 
 /* ---------- Barre commune : l'animation partagée par les deux onglets */
-.filebar-wrap { max-width: 1500px; width: 100%; margin: 0 auto; padding: 18px 28px 0; }
+.filebar-wrap { max-width: 1500px; width: 100%; margin: 0 auto; padding: 14px 28px 0; }
 .filebar {
   position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-panel); padding: 12px 14px 12px 16px;
@@ -200,8 +200,9 @@ input:disabled { color: var(--muted); border-style: dashed; cursor: not-allowed;
 .filebar input.fb-path:hover:not(:disabled) { border-color: var(--line); }
 .filebar input.fb-path:focus { background: var(--well); border-color: var(--accent-line); color: var(--text); }
 .filebar input.fb-path:disabled { border-style: solid; border-color: transparent; }
-.filebar.empty input.fb-path { background: var(--well); border-color: var(--line); margin: 6px 0 0; padding: 6px 10px; max-width: 560px; }
-.fb-hint { margin: 6px 0 0; color: var(--dim); font-size: 12px; }
+.filebar.empty .fb-main { flex-direction: row; align-items: center; gap: 14px; }
+.filebar.empty .fb-head { flex: none; }
+.filebar.empty input.fb-path { background: var(--well); border-color: var(--line); margin: 0; padding: 6px 10px; max-width: 620px; }
 .fb-actions { display: flex; align-items: center; gap: 12px; }
 .fb-group { display: flex; gap: 6px; }
 .fb-group + .fb-group { padding-left: 12px; border-left: 1px solid var(--line); }
@@ -361,7 +362,10 @@ textarea {
 }
 textarea::placeholder { color: var(--dim); }
 textarea:focus { border-color: var(--accent-line); }
-textarea.brief { min-height: 220px; }
+/* Brief élastique : il prend la place libre de la colonne, sans descendre sous 64 px
+   (la page ne défile que si même ainsi tout ne tient pas). */
+.motion .col.settings > .card:first-child { flex: 1 1 auto; }
+textarea.brief { flex: 1 1 auto; min-height: 64px; }
 input[type=password] {
   background: var(--well); border: 1px solid var(--line); border-radius: var(--r-control);
   padding: 7px 10px; outline: none; width: 100%; user-select: text;
@@ -445,10 +449,12 @@ input[type=password]:focus { border-color: var(--accent-line); }
 }
 
 /* ---------- Bande son */
-.music-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 26px; }
+.music-state { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.card-h .music-state { margin-left: auto; justify-content: flex-end; }
 .music-state .result { flex-basis: 100%; }
 .music-state .chip em { font-style: normal; color: var(--dim); margin-left: 2px; }
-.music-file { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+.music-file { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+.seg.engine .pill { padding: 8px 6px; }
 .btn.ghost.icon.sound { color: var(--accent); }
 .btn.ghost.icon.sound.off { color: var(--dim); }
 .lbl-tag { margin-left: 8px; padding: 0 7px; border-radius: 99px; font-size: 11px; color: var(--ok); background: var(--ok-soft); border: 1px solid rgba(143, 179, 155, .35); }

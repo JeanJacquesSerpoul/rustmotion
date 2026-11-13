@@ -166,6 +166,8 @@ pub fn motion_tab(
     let current = RwSignal::new(0usize);
     let refine = RwSignal::new(String::new());
     let save_error = RwSignal::new(None::<String>);
+    // Résultat de « Sauvegarder », rattaché à l'index de la version concernée.
+    let copy_status = RwSignal::new(None::<(usize, Result<String, String>)>);
     let replay = RwSignal::new(0u32);
     let pending = RwSignal::new(None::<Pending>);
 
@@ -382,6 +384,23 @@ pub fn motion_tab(
         }
         spawn_local(async move {
             let _ = invoke::<_, ()>(cmd, &A { path }).await;
+        });
+    };
+
+    let save_copy = move || {
+        #[derive(Serialize)]
+        struct A {
+            html: String,
+            current: Option<String>,
+        }
+        let idx = current.get_untracked();
+        let Some(v) = versions.with_untracked(|v| v.get(idx).cloned()) else { return };
+        spawn_local(async move {
+            match invoke::<_, Option<String>>("save_motion_as", &A { html: v.html, current: v.path }).await {
+                Ok(Some(p)) => copy_status.set(Some((idx, Ok(p)))),
+                Ok(None) => {}
+                Err(e) => copy_status.set(Some((idx, Err(e)))),
+            }
         });
     };
 
@@ -690,11 +709,16 @@ pub fn motion_tab(
                                         {tx.convert}
                                     </button>
                                     <div class="row">
-                                        <button class="btn grow" disabled=path.is_none()
+                                        <button class="btn grow" disabled=path.is_none() title=tx.open_title
                                             on:click=move |_| if let Some(p) = p2.clone() { open_path("open_file", p) }>{tx.open_browser}</button>
-                                        <button class="btn grow" disabled=path.is_none()
+                                        <button class="btn grow" disabled=path.is_none() title=tx.reveal_title
                                             on:click=move |_| if let Some(p) = p3.clone() { open_path("reveal", p) }>{tx.reveal}</button>
+                                        <button class="btn grow" title=tx.save_title on:click=move |_| save_copy()>{tx.save}</button>
                                     </div>
+                                    {move || copy_status.get().filter(|(i, _)| *i == current.get()).map(|(_, r)| match r {
+                                        Ok(p) => view! { <p class="hint small">{tx.copy_saved}" "{p}</p> }.into_any(),
+                                        Err(e) => view! { <div class="result err"><strong>{tx.copy_failed}</strong><pre>{e}</pre></div> }.into_any(),
+                                    })}
                                     <div class="refine">
                                         <label class="lbl" for="refine">{tx.refine}</label>
                                         <textarea id="refine" rows="3" placeholder=tx.refine_placeholder

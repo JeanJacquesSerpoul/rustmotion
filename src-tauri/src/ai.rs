@@ -11,6 +11,7 @@ use rustmotion_engine::tr;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::blocking;
 
@@ -409,6 +410,41 @@ pub fn save_motion(app: AppHandle, html: String) -> Result<String, String> {
     let path = unique_path(&dir, &slug_from_title(&html));
     std::fs::write(&path, html).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path.display().to_string())
+}
+
+/// Enregistre une copie de l'animation à l'emplacement choisi par l'utilisateur.
+/// `current` (le fichier enregistré automatiquement) sert à proposer un nom et un dossier.
+/// Renvoie `None` si la boîte de dialogue est annulée.
+#[tauri::command]
+pub async fn save_motion_as(app: AppHandle, html: String, current: Option<String>) -> Result<Option<String>, String> {
+    let mut d = app
+        .dialog()
+        .file()
+        .set_title(tr!("Sauvegarder l'animation", "Save the animation"))
+        .add_filter(tr!("Page HTML", "HTML page"), &["html"]);
+    let name = match current.as_deref().map(Path::new) {
+        Some(p) => {
+            if let Some(dir) = p.parent().filter(|d| d.is_dir()) {
+                d = d.set_directory(dir);
+            }
+            p.file_name().map(|n| n.to_string_lossy().into_owned())
+        }
+        None => None,
+    };
+    d = d.set_file_name(name.unwrap_or_else(|| format!("{}.html", slug_from_title(&html))));
+    blocking(move || {
+        let Some(path) = d.blocking_save_file().and_then(|p| p.into_path().ok()) else {
+            return Ok(None);
+        };
+        let path = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")) {
+            path
+        } else {
+            path.with_extension("html")
+        };
+        std::fs::write(&path, html).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
 }
 
 #[cfg(test)]

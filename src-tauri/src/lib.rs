@@ -196,6 +196,7 @@ pub fn run() {
             ai::ai_models,
             ai::read_prompt_file,
             ai::save_motion,
+            ai::save_motion_as,
             set_lang,
             tool_status,
             pick_file,

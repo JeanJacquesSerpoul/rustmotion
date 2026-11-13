@@ -576,12 +576,15 @@ pub fn motion_tab(
                                     </div>
                                 }.into_any();
                             }
-                            replay.track();
+                            // Leptos réutilise l'iframe et ne réécrit `srcdoc` que si la valeur change :
+                            // le numéro de lecture, en commentaire final, force le rechargement (rejeu).
+                            let run = replay.get();
                             match version() {
                                 Some(v) => {
                                     let (w, h) = (v.width as f64, v.height as f64);
+                                    let doc = format!("{}\n<!-- {run} -->", v.html);
                                     view! {
-                                        <iframe class="mframe" sandbox="allow-scripts" srcdoc=v.html
+                                        <iframe class="mframe" sandbox="allow-scripts" srcdoc=doc
                                             title=motion_texts(l).preview
                                             style=move || {
                                                 // Ajusté et centré : le cadre peut être plafonné en hauteur (formats verticaux).

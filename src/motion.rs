@@ -19,6 +19,11 @@ const KEY_MUSIC_STYLE: &str = "rustmotion.music.style";
 const KEY_WITH_MUSIC: &str = "rustmotion.music.auto";
 const KEY_SOUND: &str = "rustmotion.preview.sound";
 
+/// Durée d'un nouveau projet (s).
+const DEFAULT_DURATION: f64 = 20.0;
+/// Durées proposées dans la liste (s) ; toute autre valeur reste possible.
+const DURATIONS: [f64; 5] = [10.0, 20.0, 30.0, 60.0, 90.0];
+
 #[derive(Clone, PartialEq)]
 enum Gen {
     Idle,
@@ -321,7 +326,8 @@ pub fn motion_tab(
     let loading_file = RwSignal::new(false);
     let width = RwSignal::new(1920u32);
     let height = RwSignal::new(1080u32);
-    let duration = RwSignal::new(8.0f64);
+    let duration = RwSignal::new(DEFAULT_DURATION);
+    let durations_open = RwSignal::new(false);
 
     // --- Génération ----------------------------------------------------------
     let gen = RwSignal::new(Gen::Idle);
@@ -1123,10 +1129,31 @@ pub fn motion_tab(
                             <input type="number" min="16" max="8192" prop:value=move || height.get()
                                 on:change=move |ev| if let Ok(v) = event_target_value(&ev).parse() { height.set(v) } />
                         </div>
+                        // Durée : saisie libre, avec une liste de durées courantes proposée (▾).
                         <div class="field">
-                            <label class="lbl">{move || m().duration_s}</label>
-                            <input type="number" min="1" max="600" step="0.5" prop:value=move || duration.get()
-                                on:change=move |ev| set_duration(event_target_value(&ev)) />
+                            <label class="lbl" for="duration">{move || m().duration_s}</label>
+                            <div class="combo" on:keydown=move |ev| if ev.key() == "Escape" && durations_open.get_untracked() {
+                                ev.stop_propagation();
+                                durations_open.set(false);
+                            }>
+                                <input id="duration" type="number" min="1" max="600" step="0.5" prop:value=move || duration.get()
+                                    on:change=move |ev| set_duration(event_target_value(&ev)) />
+                                <button class="combo-btn" aria-haspopup="listbox" aria-expanded=move || durations_open.get().to_string()
+                                    title=move || m().duration_choices aria-label=move || m().duration_choices
+                                    on:click=move |_| durations_open.update(|o| *o = !*o)>{icon(Icon::ChevronDown)}</button>
+                                <Show when=move || durations_open.get()>
+                                    <div class="menu-scrim" on:click=move |_| durations_open.set(false)></div>
+                                    <div class="combo-menu" role="listbox" aria-label=move || m().duration_choices>
+                                        {DURATIONS.into_iter().map(|d| view! {
+                                            <button role="option" class:active=move || (duration.get() - d).abs() < 1e-6
+                                                aria-selected=move || ((duration.get() - d).abs() < 1e-6).to_string()
+                                                on:click=move |_| { duration.set(d); durations_open.set(false); }>
+                                                {format!("{d} s")}
+                                            </button>
+                                        }).collect_view()}
+                                    </div>
+                                </Show>
+                            </div>
                         </div>
                     </div>
                     // Format modifié par rapport à l'animation affichée : appliqué au prochain ajustement.

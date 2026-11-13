@@ -86,11 +86,11 @@ and the CLI for Windows (x64), macOS (Apple Silicon) and Linux (x64), then attac
 2. Commit, then push a tag with the same number:
 
 ```bash
-git tag v0.1.0
+git tag v0.2.0
 ```
 
 ```bash
-git push origin v0.1.0
+git push origin v0.2.0
 ```
 
 3. Follow the build in the **Actions** tab (about 15 to 25 minutes).

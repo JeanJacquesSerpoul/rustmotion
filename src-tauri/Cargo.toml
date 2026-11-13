@@ -22,4 +22,5 @@ rustmotion-engine = { path = "../crates/rustmotion-engine" }
 rustmotion-types = { path = "../crates/rustmotion-types" }
 ureq = "2"
 base64 = "0.22"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 pdf-extract = "0.12.1"

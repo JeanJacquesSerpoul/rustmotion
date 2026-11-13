@@ -24,7 +24,7 @@ The app has two tabs:
    It plays with the preview and is picked up automatically for the export.
 2. **Video conversion**: turns any HTML animation into a video (details below).
 
-The current animation is shared by both tabs, in a common bar (file, folder, recent, open, show, save).
+The current animation is shared by both tabs, in a common bar (file, folder, recent, open, show, save — as a .zip with the soundtrack and companion script when there are any).
 
 The proxy is expected at `http://127.0.0.1:9018/v1` by default; the URL, the proxy key (`PROXY_API_KEYS`) and the model
 are set in the **Settings ⚙** panel of the header, together with the Chrome and ffmpeg paths, and remembered.

@@ -508,35 +508,91 @@ pub async fn open_motion(path: String) -> Result<Option<OpenedMotion>, String> {
     .await
 }
 
-/// Enregistre une copie du fichier d'animation à l'emplacement choisi par l'utilisateur
-/// (dossier et nom proposés d'après l'original). Renvoie `None` si la boîte est annulée.
+/// Fichiers qui accompagnent une animation : sa bande son et son script de même nom.
+fn companions(html: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = companion_of(html).into_iter().collect();
+    if let (Some(dir), Some(stem)) = (html.parent(), html.file_stem()) {
+        let js = dir.join(format!("{}.js", stem.to_string_lossy()));
+        if js.is_file() {
+            files.push(js);
+        }
+    }
+    files
+}
+
+/// Archive ZIP (fichiers à la racine). Les sons déjà compressés sont stockés tels quels,
+/// le reste est compressé. Écrite à côté puis renommée : jamais d'archive à moitié écrite.
+fn write_zip(dest: &Path, files: &[PathBuf]) -> Result<(), String> {
+    use zip::write::SimpleFileOptions;
+    use zip::CompressionMethod;
+    let part = dest.with_extension("zip.part");
+    let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let write = || -> Result<(), String> {
+        let out = std::fs::File::create(&part).map_err(|e| io(&part, e))?;
+        let mut zip = zip::ZipWriter::new(out);
+        for f in files {
+            let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let ext = f.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            let packed = matches!(ext.as_str(), "mp3" | "m4a" | "aac" | "ogg" | "opus" | "flac");
+            let method = if packed { CompressionMethod::Stored } else { CompressionMethod::Deflated };
+            let options = SimpleFileOptions::default().compression_method(method).large_file(true);
+            zip.start_file(name, options).map_err(|e| format!("{}: {e}", dest.display()))?;
+            let mut src = std::fs::File::open(f).map_err(|e| io(f, e))?;
+            std::io::copy(&mut src, &mut zip).map_err(|e| io(f, e))?;
+        }
+        zip.finish().map_err(|e| format!("{}: {e}", dest.display()))?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
+    }
+    std::fs::rename(&part, dest).map_err(|e| io(dest, e))
+}
+
+/// Enregistre une copie de l'animation à l'emplacement choisi par l'utilisateur (dossier et nom
+/// proposés d'après l'original). Si elle a une bande son (ou un script compagnon), la copie est
+/// une archive .zip qui les contient tous. Renvoie `None` si la boîte est annulée.
 #[tauri::command]
 pub async fn save_copy(app: AppHandle, path: String) -> Result<Option<String>, String> {
     let src = PathBuf::from(path.trim().trim_matches('"'));
     if !src.is_file() {
         return Err(format!("{}: {}", src.display(), tr!("fichier introuvable", "file not found")));
     }
-    let ext = src.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "html".into());
-    let mut d = app
-        .dialog()
-        .file()
-        .set_title(tr!("Sauvegarder l'animation", "Save the animation"))
-        .add_filter(tr!("Page HTML", "HTML page"), &[ext.as_str()]);
+    let extra = companions(&src);
+    let zipped = !extra.is_empty();
+    let ext = if zipped {
+        "zip".to_string()
+    } else {
+        src.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "html".into())
+    };
+    let mut d = app.dialog().file().set_title(tr!("Sauvegarder l'animation", "Save the animation"));
+    d = if zipped {
+        d.add_filter(tr!("Archive ZIP (animation et bande son)", "ZIP archive (animation and soundtrack)"), &["zip"])
+    } else {
+        d.add_filter(tr!("Page HTML", "HTML page"), &[ext.as_str()])
+    };
     if let Some(dir) = src.parent().filter(|d| d.is_dir()) {
         d = d.set_directory(dir);
     }
-    if let Some(name) = src.file_name() {
-        d = d.set_file_name(name.to_string_lossy());
+    if let Some(stem) = src.file_stem() {
+        d = d.set_file_name(format!("{}.{ext}", stem.to_string_lossy()));
     }
     blocking(move || {
         let Some(dest) = d.blocking_save_file().and_then(|p| p.into_path().ok()) else {
             return Ok(None);
         };
-        let dest = if dest.extension().is_some() { dest } else { dest.with_extension(&ext) };
-        // Même fichier : rien à copier (une copie sur lui-même le viderait).
-        let same = matches!((dest.canonicalize(), src.canonicalize()), (Ok(a), Ok(b)) if a == b);
-        if !same {
-            std::fs::copy(&src, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+        let dest = if dest.extension().is_some_and(|e| e.eq_ignore_ascii_case(&ext)) { dest } else { dest.with_extension(&ext) };
+        if zipped {
+            let mut files = vec![src.clone()];
+            files.extend(extra);
+            write_zip(&dest, &files)?;
+        } else {
+            // Même fichier : rien à copier (une copie sur lui-même le viderait).
+            let same = matches!((dest.canonicalize(), src.canonicalize()), (Ok(a), Ok(b)) if a == b);
+            if !same {
+                std::fs::copy(&src, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+            }
         }
         Ok(Some(dest.display().to_string()))
     })
@@ -895,6 +951,32 @@ pub async fn recent_files(paths: Vec<String>) -> Result<Vec<RecentFile>, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zips_animation_with_companions() {
+        use std::io::Read;
+        let dir = std::env::temp_dir().join(format!("rustmotion-zip-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let html = dir.join("anim.html");
+        std::fs::write(&html, "<html><body>x</body></html>").unwrap();
+        std::fs::write(dir.join("anim.mp3"), b"ID3\x03fake-audio").unwrap();
+        std::fs::write(dir.join("anim.js"), "console.log(1)").unwrap();
+        let extra = companions(&html);
+        assert_eq!(extra.len(), 2);
+        let dest = dir.join("copie.zip");
+        let mut files = vec![html.clone()];
+        files.extend(extra);
+        write_zip(&dest, &files).unwrap();
+        assert!(!dir.join("copie.zip.part").exists());
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&dest).unwrap()).unwrap();
+        let mut names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().unwrap().to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["anim.html", "anim.js", "anim.mp3"]);
+        let mut audio = Vec::new();
+        zip.by_name("anim.mp3").unwrap().read_to_end(&mut audio).unwrap();
+        assert_eq!(audio, b"ID3\x03fake-audio");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn audio_signatures() {

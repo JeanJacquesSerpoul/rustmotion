@@ -656,6 +656,9 @@ pub fn App() -> impl IntoView {
         }
     });
 
+    // Bande son ou script compagnon : la sauvegarde se fait alors en .zip.
+    let has_companion = move || files.with(|f| f.as_ref().is_some_and(|f| f.audio.is_some() || f.script_found));
+
     let source_format = Signal::derive(move || {
         probe_info.get().map(|i| SourceFormat { path: source_path(), width: i.width, height: i.height, duration: i.duration })
     });
@@ -849,7 +852,10 @@ pub fn App() -> impl IntoView {
                                             on:click=move |_| open_path("open_file", source_path())>{icon(Icon::External)}</button>
                                         <button class="btn ghost icon" title=m.reveal_title aria-label=m.reveal_title disabled=move || !is_local()
                                             on:click=move |_| open_path("reveal", source_path())>{icon(Icon::Reveal)}</button>
-                                        <button class="btn ghost icon" title=m.save_title aria-label=m.save_title disabled=move || !is_html_file()
+                                        <button class="btn ghost icon"
+                                            title=move || if has_companion() { m.save_zip_title } else { m.save_title }
+                                            aria-label=move || if has_companion() { m.save_zip_title } else { m.save_title }
+                                            disabled=move || !is_html_file()
                                             on:click=move |_| save_copy()>{icon(Icon::Save)}</button>
                                     }
                                 }}

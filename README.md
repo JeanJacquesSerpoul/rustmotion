@@ -25,7 +25,7 @@ L'application a deux onglets :
 2. **Conversion vidéo** : transforme n'importe quelle animation HTML en vidéo (détails ci-dessous).
 
 L'animation courante est partagée par les deux onglets, dans une barre commune (fichier, dossier, récents, ouvrir,
-afficher, sauvegarder).
+afficher, sauvegarder — en .zip avec la bande son et le script compagnon s'il y en a).
 
 Le proxy est attendu par défaut sur `http://127.0.0.1:9018/v1` ; l'URL, la clé du proxy (`PROXY_API_KEYS`) et le modèle
 se règlent dans le panneau **Réglages ⚙** de l'en-tête, avec les chemins de Chrome et de ffmpeg, et sont mémorisés.

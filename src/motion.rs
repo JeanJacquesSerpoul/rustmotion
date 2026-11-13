@@ -106,8 +106,19 @@ struct Version {
     width: u32,
     height: u32,
     duration: f64,
+    /// Format sûr (généré ici ou lu dans les balises `rustmotion:`) ; sinon repris de l'analyse.
+    sized: bool,
     /// Message utilisateur qui a produit cette version (brief ou ajustement).
     request: String,
+}
+
+/// Format détecté par l'analyse de l'onglet Conversion pour le fichier courant.
+#[derive(Clone, PartialEq)]
+pub struct SourceFormat {
+    pub path: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub duration: Option<f64>,
 }
 
 fn storage() -> Option<web_sys::Storage> {
@@ -133,15 +144,17 @@ fn fmt_secs(ms: u64) -> String {
     }
 }
 
-/// Construit l'onglet. `on_convert` reçoit le chemin du fichier HTML à convertir en vidéo ;
-/// `opened_html` reçoit le chemin d'un HTML ouvert dans l'onglet Conversion, affiché ici s'il
-/// s'agit d'un motion design.
+/// Construit l'onglet. `source` est l'animation de la barre commune : un HTML choisi ailleurs
+/// s'affiche ici, et chaque version affichée ici y est envoyée par `on_file`.
+/// `on_convert` passe à l'onglet Conversion.
 pub fn motion_tab(
     lang: RwSignal<Lang>,
     active: Signal<bool>,
     dropped_doc: RwSignal<Option<String>>,
-    opened_html: RwSignal<Option<String>>,
-    on_convert: impl Fn(String) + Copy + Send + Sync + 'static,
+    source: Signal<String>,
+    source_format: Signal<Option<SourceFormat>>,
+    on_file: impl Fn(String) + Copy + Send + Sync + 'static,
+    on_convert: impl Fn() + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let in_tauri = tauri::available();
     let m = move || motion_texts(lang.get());
@@ -169,8 +182,6 @@ pub fn motion_tab(
     let current = RwSignal::new(0usize);
     let refine = RwSignal::new(String::new());
     let save_error = RwSignal::new(None::<String>);
-    // Résultat de « Sauvegarder », rattaché à l'index de la version concernée.
-    let copy_status = RwSignal::new(None::<(usize, Result<String, String>)>);
     let replay = RwSignal::new(0u32);
     let pending = RwSignal::new(None::<Pending>);
 
@@ -221,16 +232,17 @@ pub fn motion_tab(
         }
     });
 
-    // Motion design ouvert dans l'onglet Conversion : il devient l'animation affichée ici.
+    // Animation choisie dans la barre commune : elle devient l'animation affichée ici.
     Effect::new(move |_| {
-        let Some(path) = opened_html.get() else { return };
-        opened_html.set(None);
-        if gen.get_untracked() == Gen::Running {
+        let path = source.get().trim().trim_matches('"').to_string();
+        if path.is_empty() || gen.get_untracked() == Gen::Running {
             return;
         }
-        // Déjà dans l'historique (par ex. envoyé d'ici via « Convertir en vidéo ») : on l'affiche.
+        // Déjà dans l'historique (version générée ici) : on l'affiche simplement.
         if let Some(i) = versions.with_untracked(|vs| vs.iter().position(|v| v.path.as_deref() == Some(path.as_str()))) {
-            current.set(i);
+            if current.get_untracked() != i {
+                current.set(i);
+            }
             return;
         }
         #[derive(Serialize)]
@@ -247,9 +259,11 @@ pub fn motion_tab(
         }
         spawn_local(async move {
             let Ok(Some(o)) = invoke::<_, Option<Opened>>("open_motion", &A { path: path.clone() }).await else { return };
-            if gen.get_untracked() == Gen::Running {
+            // La source a changé entre-temps, ou une génération a démarré.
+            if source.get_untracked().trim().trim_matches('"') != path || gen.get_untracked() == Gen::Running {
                 return;
             }
+            let sized = o.width.is_some() && o.height.is_some() && o.duration.is_some();
             let (w, h, d) = (
                 o.width.unwrap_or_else(|| width.get_untracked()),
                 o.height.unwrap_or_else(|| height.get_untracked()),
@@ -269,13 +283,44 @@ pub fn motion_tab(
                 width: w,
                 height: h,
                 duration: d,
+                sized,
                 request: format!("Existing animation \"{name}\", opened from a file."),
             }]);
             current.set(0);
-            copy_status.set(None);
             refine.set(String::new());
             gen.set(Gen::Idle);
         });
+    });
+
+    // Fichier sans balises `rustmotion:` : son format vient de l'analyse de l'onglet Conversion.
+    Effect::new(move |_| {
+        let Some(f) = source_format.get() else { return };
+        let i = current.get_untracked();
+        let target = versions.with_untracked(|vs| vs.get(i).is_some_and(|v| !v.sized && v.path.as_deref() == Some(f.path.as_str())));
+        if !target {
+            return;
+        }
+        let mut dims = (0, 0, 0.0);
+        versions.update(|vs| {
+            let v = &mut vs[i];
+            v.width = f.width.unwrap_or(v.width);
+            v.height = f.height.unwrap_or(v.height);
+            v.duration = f.duration.unwrap_or(v.duration);
+            v.sized = true;
+            dims = (v.width, v.height, v.duration);
+        });
+        width.set(dims.0);
+        height.set(dims.1);
+        duration.set(dims.2);
+    });
+
+    // La version affichée ici devient l'animation de la barre commune.
+    Effect::new(move |prev: Option<Option<String>>| {
+        let path = versions.with(|vs| vs.get(current.get()).and_then(|v| v.path.clone()));
+        if let Some(p) = path.clone().filter(|_| prev.as_ref() != Some(&path)) {
+            on_file(p);
+        }
+        path
     });
 
     let pick_brief = move || {
@@ -339,6 +384,7 @@ pub fn motion_tab(
                             width: w,
                             height: h,
                             duration: d,
+                            sized: true,
                             request,
                         })
                     });
@@ -434,33 +480,6 @@ pub fn motion_tab(
         struct A {}
         spawn_local(async move {
             let _ = invoke::<_, ()>("ai_cancel", &A {}).await;
-        });
-    };
-
-    let open_path = move |cmd: &'static str, path: String| {
-        #[derive(Serialize)]
-        struct A {
-            path: String,
-        }
-        spawn_local(async move {
-            let _ = invoke::<_, ()>(cmd, &A { path }).await;
-        });
-    };
-
-    let save_copy = move || {
-        #[derive(Serialize)]
-        struct A {
-            html: String,
-            current: Option<String>,
-        }
-        let idx = current.get_untracked();
-        let Some(v) = versions.with_untracked(|v| v.get(idx).cloned()) else { return };
-        spawn_local(async move {
-            match invoke::<_, Option<String>>("save_motion_as", &A { html: v.html, current: v.path }).await {
-                Ok(Some(p)) => copy_status.set(Some((idx, Ok(p)))),
-                Ok(None) => {}
-                Err(e) => copy_status.set(Some((idx, Err(e)))),
-            }
         });
     };
 
@@ -754,31 +773,15 @@ pub fn motion_tab(
                                 }}</p>
                             }.into_any(),
                             Some(v) => {
-                                let path = v.path.clone();
-                                let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
+                                let saved = v.path.is_some();
                                 view! {
                                     {status}
                                     {v.truncated.then(|| view! { <div class="result warn"><strong>{tx.truncated}</strong></div> })}
-                                    {match &path {
-                                        Some(p) => view! { <div class="result ok"><strong>{tx.saved}</strong><span>{p.clone()}</span></div> }.into_any(),
-                                        None => view! { <div class="result err"><strong>{tx.save_failed}</strong>
-                                            <pre>{save_error.get().unwrap_or_default()}</pre></div> }.into_any(),
-                                    }}
-                                    <button class="btn primary big wide" disabled=path.is_none()
-                                        on:click=move |_| if let Some(p) = p1.clone() { on_convert(p) }>
+                                    {(!saved).then(|| view! { <div class="result err"><strong>{tx.save_failed}</strong>
+                                        <pre>{save_error.get().unwrap_or_default()}</pre></div> })}
+                                    <button class="btn primary big wide" disabled=!saved on:click=move |_| on_convert()>
                                         {tx.convert}
                                     </button>
-                                    <div class="row">
-                                        <button class="btn grow" disabled=path.is_none() title=tx.open_title
-                                            on:click=move |_| if let Some(p) = p2.clone() { open_path("open_file", p) }>{tx.open_browser}</button>
-                                        <button class="btn grow" disabled=path.is_none() title=tx.reveal_title
-                                            on:click=move |_| if let Some(p) = p3.clone() { open_path("reveal", p) }>{tx.reveal}</button>
-                                        <button class="btn grow" title=tx.save_title on:click=move |_| save_copy()>{tx.save}</button>
-                                    </div>
-                                    {move || copy_status.get().filter(|(i, _)| *i == current.get()).map(|(_, r)| match r {
-                                        Ok(p) => view! { <p class="hint small">{tx.copy_saved}" "{p}</p> }.into_any(),
-                                        Err(e) => view! { <div class="result err"><strong>{tx.copy_failed}</strong><pre>{e}</pre></div> }.into_any(),
-                                    })}
                                     <div class="refine">
                                         <label class="lbl" for="refine">{tx.refine}</label>
                                         <textarea id="refine" rows="3" placeholder=tx.refine_placeholder

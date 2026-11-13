@@ -4,6 +4,7 @@ use rustmotion_types::{Codec, Framing, Lang, ProbeInfo, Progress, RenderSettings
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::{self, texts};
+use crate::motion::SourceFormat;
 use crate::tauri::{self, invoke};
 
 #[derive(Clone, PartialEq)]
@@ -156,8 +157,8 @@ pub fn App() -> impl IntoView {
     let tab = RwSignal::new(Tab::Motion);
     // Brief (PDF / texte) déposé sur la fenêtre, transmis à l'onglet Motion design.
     let dropped_doc = RwSignal::new(None::<String>);
-    // HTML ouvert ici, transmis à l'onglet Motion design pour qu'il l'affiche aussi.
-    let opened_html = RwSignal::new(None::<String>);
+    // Résultat de « Sauvegarder » dans la barre commune, rattaché au fichier copié.
+    let copy_status = RwSignal::new(None::<(String, Result<String, String>)>);
 
     // --- Actions ------------------------------------------------------------
     let refresh_tools = move || {
@@ -273,10 +274,6 @@ pub fn App() -> impl IntoView {
 
     let set_input = move |path: String| {
         input.set(path.clone());
-        let lower = path.trim().trim_matches('"').to_ascii_lowercase();
-        if lower.ends_with(".html") || lower.ends_with(".htm") {
-            opened_html.set(Some(path.trim().trim_matches('"').to_string()));
-        }
         files.set(None);
         if !path.trim().is_empty() {
             #[derive(Serialize)]
@@ -407,6 +404,21 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let save_copy = move || {
+        #[derive(Serialize)]
+        struct A {
+            path: String,
+        }
+        let path = input.get_untracked();
+        spawn_local(async move {
+            match invoke::<_, Option<String>>("save_copy", &A { path: path.clone() }).await {
+                Ok(Some(p)) => copy_status.set(Some((path, Ok(p)))),
+                Ok(None) => {}
+                Err(e) => copy_status.set(Some((path, Err(e)))),
+            }
+        });
+    };
+
     // --- Événements Tauri ---------------------------------------------------
     if in_tauri {
         refresh_tools();
@@ -429,13 +441,14 @@ pub fn App() -> impl IntoView {
                 if phase.get_untracked() == Phase::Rendering {
                     return;
                 }
-                tab.set(Tab::Convert);
                 let is_audio = [".mp3", ".wav", ".aac", ".m4a", ".ogg", ".flac", ".opus"]
                     .iter()
                     .any(|e| lower.ends_with(e));
                 if is_audio {
+                    tab.set(Tab::Convert);
                     audio.set(p);
                 } else {
+                    // L'animation va dans la barre commune : l'onglet affiché ne change pas.
                     set_input(p);
                 }
             }
@@ -460,6 +473,20 @@ pub fn App() -> impl IntoView {
         let accepted = probe_info.get().is_some_and(|i| i.rejection().is_none()) && !probing.get();
         !rendering() && tools_ok() && accepted && !input.get().trim().is_empty() && !output.get().trim().is_empty() && duration.get() > 0.0
     };
+
+    // --- Barre commune : l'animation partagée par les deux onglets ---------------
+    let source_path = move || input.get().trim().trim_matches('"').to_string();
+    let is_local = move || {
+        let p = source_path().to_ascii_lowercase();
+        !p.is_empty() && !["http://", "https://", "file:", "data:"].iter().any(|s| p.starts_with(s))
+    };
+    let is_html_file = move || {
+        let p = source_path().to_ascii_lowercase();
+        is_local() && (p.ends_with(".html") || p.ends_with(".htm"))
+    };
+    let source_format = Signal::derive(move || {
+        probe_info.get().map(|i| SourceFormat { path: source_path(), width: i.width, height: i.height, duration: i.duration })
+    });
 
     // --- Vue ----------------------------------------------------------------
     view! {
@@ -510,18 +537,88 @@ pub fn App() -> impl IntoView {
                 </div>
             </header>
 
+            // ---------------- Animation commune aux deux onglets
+            <div class="filebar-wrap">
+                <section class="filebar" class:empty=move || source_path().is_empty() aria-label=move || t().bar_label>
+                    <div class="fb-icon" aria-hidden="true"><span></span></div>
+                    <div class="fb-main">
+                        <div class="fb-head">
+                            <strong class="fb-name">{move || {
+                                if source_path().is_empty() {
+                                    t().bar_empty.to_string()
+                                } else {
+                                    files.get().and_then(|f| f.html).unwrap_or_else(|| file_name(&source_path()))
+                                }
+                            }}</strong>
+                            {move || {
+                                let l = lang.get();
+                                let tx = texts(l);
+                                if probing.get() {
+                                    return Some(view! { <span class="chip"><span class="spin"></span>{tx.analysing}</span> }.into_any());
+                                }
+                                probe_info.get().map(|i| {
+                                    let size = i.width.zip(i.height).map(|(w, h)| format!("{w}×{h}"));
+                                    let secs = i.duration.map(|d| format!("{} s", (d * 100.0).round() / 100.0));
+                                    let label = [size, secs].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                                    (!label.is_empty()).then(|| view! { <span class="chip">{label}</span> })
+                                }).map(|v| v.into_any())
+                            }}
+                            {move || {
+                                let m = i18n::motion_texts(lang.get());
+                                copy_status.get().filter(|(src, _)| *src == input.get()).map(|(_, r)| match r {
+                                    Ok(p) => view! { <span class="chip ok" title=p>{m.copy_saved.trim_end_matches([' ', ':'])}" ✓"</span> }.into_any(),
+                                    Err(e) => view! { <span class="chip err" title=e>{m.copy_failed}</span> }.into_any(),
+                                })
+                            }}
+                        </div>
+                        <input class="fb-path" type="text" spellcheck="false" placeholder=move || t().path_placeholder
+                            title=move || input.get() prop:value=move || input.get() disabled=rendering
+                            on:change=move |ev| set_input(event_target_value(&ev)) />
+                        <Show when=move || source_path().is_empty()>
+                            <p class="fb-hint">{move || t().bar_hint}</p>
+                        </Show>
+                    </div>
+                    <div class="fb-actions">
+                        <div class="fb-group">
+                            <button class="btn" title=move || t().btn_file_title on:click=move |_| pick("html", input, true) disabled=rendering>
+                                {move || t().btn_file}
+                            </button>
+                            <button class="btn" title=move || t().btn_folder_title on:click=move |_| pick_folder() disabled=rendering>
+                                {move || t().btn_folder}
+                            </button>
+                        </div>
+                        <Show when=move || !source_path().is_empty()>
+                            <div class="fb-group">
+                                {move || {
+                                    let m = i18n::motion_texts(lang.get());
+                                    view! {
+                                        <button class="btn ghost" title=m.open_title disabled=move || !is_local()
+                                            on:click=move |_| open_path("open_file", source_path())>{m.open_browser}</button>
+                                        <button class="btn ghost" title=m.reveal_title disabled=move || !is_local()
+                                            on:click=move |_| open_path("reveal", source_path())>{m.reveal}</button>
+                                        <button class="btn ghost" title=m.save_title disabled=move || !is_html_file()
+                                            on:click=move |_| save_copy()>{m.save}</button>
+                                    }
+                                }}
+                            </div>
+                        </Show>
+                    </div>
+                </section>
+            </div>
+
             {crate::motion::motion_tab(
                 lang,
                 Signal::derive(move || tab.get() == Tab::Motion),
                 dropped_doc,
-                opened_html,
+                Signal::derive(move || input.get()),
+                source_format,
                 move |path: String| {
-                    tab.set(Tab::Convert);
-                    // Pendant un rendu, la source ne change pas : on montre simplement l'onglet.
-                    if phase.get_untracked() != Phase::Rendering {
+                    // Pendant un rendu, la source ne change pas.
+                    if phase.get_untracked() != Phase::Rendering && input.get_untracked().trim().trim_matches('"') != path {
                         set_input(path);
                     }
                 },
+                move || tab.set(Tab::Convert),
             )}
 
             <main class="grid" class:hidden=move || tab.get() != Tab::Convert>
@@ -529,48 +626,19 @@ pub fn App() -> impl IntoView {
                     // ---------------- Source
                     <div class="card">
                         <div class="card-h"><span class="step">"1"</span><h2>{move || t().source}</h2></div>
-                        <div class="drop" class:filled=move || !input.get().is_empty()>
-                            {move || if input.get().is_empty() {
-                                view! {
-                                    <div class="drop-empty">
-                                        <strong>{t().drop_title}</strong>
-                                        <span>{t().drop_sub}</span>
-                                    </div>
-                                }.into_any()
-                            } else {
-                                let tx = t();
-                                // Page HTML, puis son script compagnon de même nom.
-                                let script_row = files.get().and_then(|f| {
-                                    let name = f.expected_script.clone()?;
-                                    Some(if f.script_found {
-                                        let note = if f.script_linked { tx.script_linked } else { tx.script_injected };
-                                        view! {
-                                            <li class="ok"><b>{name}</b><span>{note}</span></li>
-                                        }.into_any()
-                                    } else {
-                                        view! {
-                                            <li class="warn"><b>{name}</b><span>{tx.script_missing}</span></li>
-                                        }.into_any()
-                                    })
-                                });
-                                view! {
-                                    <div class="drop-file">
-                                        <ul class="files">
-                                            <li><b>{files.get().and_then(|f| f.html).unwrap_or_else(|| file_name(&input.get()))}</b><span>"HTML"</span></li>
-                                            {script_row}
-                                        </ul>
-                                        <span>{input.get()}</span>
-                                    </div>
-                                }.into_any()
-                            }}
-                        </div>
-                        <div class="row">
-                            <input class="grow" type="text" placeholder=move || t().path_placeholder
-                                prop:value=move || input.get()
-                                on:change=move |ev| set_input(event_target_value(&ev)) />
-                            <button class="btn" on:click=move |_| pick("html", input, true) disabled=rendering>{move || t().btn_file}</button>
-                            <button class="btn" on:click=move |_| pick_folder() disabled=rendering>{move || t().btn_folder}</button>
-                        </div>
+                        // Script compagnon de même nom que la page (le fichier lui-même est dans la barre du haut).
+                        {move || {
+                            let tx = t();
+                            files.get().and_then(|f| {
+                                let name = f.expected_script.clone()?;
+                                Some(if f.script_found {
+                                    let note = if f.script_linked { tx.script_linked } else { tx.script_injected };
+                                    view! { <ul class="files"><li class="ok"><b>{name}</b><span>{note}</span></li></ul> }.into_any()
+                                } else {
+                                    view! { <ul class="files"><li class="warn"><b>{name}</b><span>{tx.script_missing}</span></li></ul> }.into_any()
+                                })
+                            })
+                        }}
                         <div class="query">
                             <label class="lbl" for="query">{move || t().query_label}</label>
                             <div class="query-field">
@@ -593,6 +661,7 @@ pub fn App() -> impl IntoView {
                                     return view! { <span class="chip err">{e}</span> }.into_any();
                                 }
                                 match probe_info.get() {
+                                    None if input.get().trim().is_empty() => view! { <span class="hint">{tx.need_input}</span> }.into_any(),
                                     None => view! { <span class="hint">{tx.probe_hint}</span> }.into_any(),
                                     Some(i) => view! {
                                         {(!i.title.is_empty()).then(|| view! { <span class="chip strong">{i.title.clone()}</span> })}

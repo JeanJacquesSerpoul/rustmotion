@@ -453,63 +453,64 @@ fn html_title(html: &str) -> Option<String> {
     Some(html[s..e].trim().to_string()).filter(|t| !t.is_empty())
 }
 
-/// Lit un fichier HTML ouvert dans l'onglet Conversion. Renvoie `None` si ce n'est pas un
-/// motion design (aucune balise `rustmotion:`), pour ne pas importer une page quelconque.
+/// Lit l'animation choisie dans la barre commune (fichier HTML, ou dossier contenant
+/// `index.html`) pour l'afficher dans l'onglet Motion design. Le format vient des balises
+/// `rustmotion:` quand elles existent. Renvoie `None` pour une URL ou un autre type de fichier.
 #[tauri::command]
 pub async fn open_motion(path: String) -> Result<Option<OpenedMotion>, String> {
     blocking(move || {
-        let p = PathBuf::from(path.trim().trim_matches('"'));
-        if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")) {
+        let mut p = PathBuf::from(path.trim().trim_matches('"'));
+        if p.is_dir() {
+            p = p.join("index.html");
+        }
+        if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")) || !p.is_file() {
             return Ok(None);
         }
         let size = std::fs::metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?.len();
         if size > MAX_PROMPT_FILE {
-            return Ok(None);
+            return Err(tr!("fichier trop volumineux (50 Mo max)", "file too large (50 MB max)").into());
         }
         let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
         let html = String::from_utf8_lossy(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).into_owned();
         let num = |k: &str| rustmotion_meta(&html, k);
         let (width, height) = (num("width").and_then(|v| v.parse().ok()), num("height").and_then(|v| v.parse().ok()));
         let duration = num("duration").and_then(|v| v.parse().ok()).filter(|d: &f64| *d > 0.0);
-        if width.is_none() && height.is_none() && duration.is_none() {
-            return Ok(None);
-        }
         Ok(Some(OpenedMotion { title: html_title(&html), html, width, height, duration }))
     })
     .await
 }
 
-/// Enregistre une copie de l'animation à l'emplacement choisi par l'utilisateur.
-/// `current` (le fichier enregistré automatiquement) sert à proposer un nom et un dossier.
-/// Renvoie `None` si la boîte de dialogue est annulée.
+/// Enregistre une copie du fichier d'animation à l'emplacement choisi par l'utilisateur
+/// (dossier et nom proposés d'après l'original). Renvoie `None` si la boîte est annulée.
 #[tauri::command]
-pub async fn save_motion_as(app: AppHandle, html: String, current: Option<String>) -> Result<Option<String>, String> {
+pub async fn save_copy(app: AppHandle, path: String) -> Result<Option<String>, String> {
+    let src = PathBuf::from(path.trim().trim_matches('"'));
+    if !src.is_file() {
+        return Err(format!("{}: {}", src.display(), tr!("fichier introuvable", "file not found")));
+    }
+    let ext = src.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "html".into());
     let mut d = app
         .dialog()
         .file()
         .set_title(tr!("Sauvegarder l'animation", "Save the animation"))
-        .add_filter(tr!("Page HTML", "HTML page"), &["html"]);
-    let name = match current.as_deref().map(Path::new) {
-        Some(p) => {
-            if let Some(dir) = p.parent().filter(|d| d.is_dir()) {
-                d = d.set_directory(dir);
-            }
-            p.file_name().map(|n| n.to_string_lossy().into_owned())
-        }
-        None => None,
-    };
-    d = d.set_file_name(name.unwrap_or_else(|| format!("{}.html", slug_from_title(&html))));
+        .add_filter(tr!("Page HTML", "HTML page"), &[ext.as_str()]);
+    if let Some(dir) = src.parent().filter(|d| d.is_dir()) {
+        d = d.set_directory(dir);
+    }
+    if let Some(name) = src.file_name() {
+        d = d.set_file_name(name.to_string_lossy());
+    }
     blocking(move || {
-        let Some(path) = d.blocking_save_file().and_then(|p| p.into_path().ok()) else {
+        let Some(dest) = d.blocking_save_file().and_then(|p| p.into_path().ok()) else {
             return Ok(None);
         };
-        let path = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")) {
-            path
-        } else {
-            path.with_extension("html")
-        };
-        std::fs::write(&path, html).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(Some(path.display().to_string()))
+        let dest = if dest.extension().is_some() { dest } else { dest.with_extension(&ext) };
+        // Même fichier : rien à copier (une copie sur lui-même le viderait).
+        let same = matches!((dest.canonicalize(), src.canonicalize()), (Ok(a), Ok(b)) if a == b);
+        if !same {
+            std::fs::copy(&src, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+        }
+        Ok(Some(dest.display().to_string()))
     })
     .await
 }

@@ -4,6 +4,7 @@
 //! horloge virtuelle injectée (`shim.js`). Pour chaque image, le temps virtuel est
 //! avancé de 1/fps, la page est capturée en PNG et envoyée à ffmpeg via stdin.
 
+pub mod audio;
 pub mod browser;
 pub mod cdp;
 pub mod encoder;

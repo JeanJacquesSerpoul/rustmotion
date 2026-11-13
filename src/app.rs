@@ -867,6 +867,7 @@ pub fn App() -> impl IntoView {
                 dropped_audio,
                 ai,
                 settings_open,
+                Signal::derive(move || browser_path.get()),
                 Signal::derive(move || input.get()),
                 source_format,
                 move |path: String| {

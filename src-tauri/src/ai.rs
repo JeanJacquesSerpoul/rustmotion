@@ -197,7 +197,29 @@ pub async fn ai_generate(app: AppHandle, state: State<'_, AiState>, req: AiReque
     res
 }
 
-fn generate(req: &AiRequest, cancel: &AtomicBool, mut on_progress: impl FnMut(AiProgress)) -> Result<Option<AiResult>, String> {
+/// Réponse complète d'un modèle de texte.
+struct Chat {
+    content: String,
+    model: Option<String>,
+    finish: Option<String>,
+    cost: Option<f64>,
+}
+
+fn generate(req: &AiRequest, cancel: &AtomicBool, on_progress: impl FnMut(AiProgress)) -> Result<Option<AiResult>, String> {
+    let Some(Chat { content, model, finish, cost }) = chat(req, cancel, on_progress)? else { return Ok(None) };
+    let html = extract_html(&content).ok_or_else(|| {
+        format!(
+            "{}\n\n{}",
+            tr!("la réponse ne contient pas de document HTML :", "the response contains no HTML document:"),
+            tail(&content, 600)
+        )
+    })?;
+    let truncated = finish.as_deref() == Some("length") || !html.to_ascii_lowercase().contains("</html>");
+    Ok(Some(AiResult { html, truncated, model, cost }))
+}
+
+/// Envoie la conversation au proxy (en streaming si possible) et renvoie la réponse complète.
+fn chat(req: &AiRequest, cancel: &AtomicBool, mut on_progress: impl FnMut(AiProgress)) -> Result<Option<Chat>, String> {
     let url = endpoint(&req.base_url);
     let body = json!({
         "model": req.model.trim(),
@@ -285,15 +307,7 @@ fn generate(req: &AiRequest, cancel: &AtomicBool, mut on_progress: impl FnMut(Ai
     if content.trim().is_empty() {
         return Err(tr!("le modèle n'a renvoyé aucun contenu", "the model returned no content").into());
     }
-    let html = extract_html(&content).ok_or_else(|| {
-        format!(
-            "{}\n\n{}",
-            tr!("la réponse ne contient pas de document HTML :", "the response contains no HTML document:"),
-            tail(&content, 600)
-        )
-    })?;
-    let truncated = finish.as_deref() == Some("length") || !html.to_ascii_lowercase().contains("</html>");
-    Ok(Some(AiResult { html, truncated, model, cost }))
+    Ok(Some(Chat { content, model, finish, cost }))
 }
 
 #[tauri::command]
@@ -698,6 +712,57 @@ pub async fn ai_soundtrack(state: State<'_, AiState>, req: MusicRequest) -> Resu
         let Some((bytes, cost)) = compose(&req, &cancel)? else { return Ok(None) };
         let path = install_audio(&html, &bytes, audio_ext(&bytes))?.display().to_string();
         Ok(Some(MusicResult { path, cost }))
+    })
+    .await;
+    busy.store(false, Ordering::SeqCst);
+    res
+}
+
+#[derive(Deserialize)]
+pub struct MusicCodeRequest {
+    /// Conversation pour le modèle de l'animation (consignes + animation).
+    chat: AiRequest,
+    /// Animation à laquelle rattacher la bande son.
+    html_path: String,
+    duration: f64,
+    /// Navigateur imposé dans les réglages (sinon détecté).
+    browser_path: Option<String>,
+}
+
+/// Bande son écrite par le modèle de l'animation : il produit du code Web Audio, exécuté hors
+/// écran dans le navigateur headless ; le WAV obtenu est installé à côté de l'animation.
+#[tauri::command]
+pub async fn ai_soundtrack_code(state: State<'_, AiState>, req: MusicCodeRequest) -> Result<Option<MusicResult>, String> {
+    let html = resolve_html(&req.html_path)?;
+    if state.busy.swap(true, Ordering::SeqCst) {
+        return Err(tr!("une génération est déjà en cours", "a generation is already running").into());
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    let cancel = state.cancel.clone();
+    let busy = state.busy.clone();
+    let res = blocking(move || {
+        let Some(answer) = chat(&req.chat, &cancel, |_| {})? else { return Ok(None) };
+        if answer.finish.as_deref() == Some("length") {
+            return Err(tr!(
+                "réponse coupée par la limite du modèle : le code de la bande son est incomplet",
+                "response cut by the model's limit: the soundtrack code is incomplete"
+            )
+            .into());
+        }
+        let code = rustmotion_engine::audio::extract_js(&answer.content).ok_or_else(|| {
+            format!(
+                "{}\n\n{}",
+                tr!("la réponse ne contient pas de fonction compose() :", "the response contains no compose() function:"),
+                tail(&answer.content, 600)
+            )
+        })?;
+        if cancel.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let wav = rustmotion_engine::audio::render_code(&code, req.duration, req.browser_path.as_deref().filter(|p| !p.trim().is_empty()))
+            .map_err(|e| format!("{e:#}"))?;
+        let path = install_audio(&html, &wav, "wav")?.display().to_string();
+        Ok(Some(MusicResult { path, cost: answer.cost }))
     })
     .await;
     busy.store(false, Ordering::SeqCst);

@@ -522,9 +522,61 @@ Answer with the complete HTML document only, starting with <!DOCTYPE html> and e
         )
     }
 
+    /// Taille maximale du HTML de l'animation transmis au compositeur (caractères).
+    const MUSIC_CODE_HTML_MAX: usize = 40_000;
+
+    /// Consignes données au modèle de l'animation pour qu'il écrive le code de la bande son
+    /// (API Web Audio, rendu hors écran par le moteur).
+    pub fn music_code_system(duration: f64, style: &str) -> String {
+        let d = (duration * 100.0).round() / 100.0;
+        let style = match style.trim() {
+            "" => "Choose a musical style that matches the mood and pace of the animation.".to_string(),
+            s => format!("Musical style requested: {s}."),
+        };
+        format!(
+            r#"You are a senior composer and sound designer who writes code. You create the soundtrack of a motion design animation by writing JavaScript that synthesizes it with the Web Audio API; it is rendered offline into an audio file.
+
+Write exactly one function:
+async function compose(ctx, duration) {{ ... }}
+
+Hard requirements:
+- `ctx` is an OfflineAudioContext (2 channels, 44100 Hz) that lasts exactly `duration` seconds ({d} s). Schedule every sound at absolute times between 0 and `duration`, and connect it (directly or through your own effects) to ctx.destination. Never call ctx.startRendering().
+- Use only Web Audio nodes created from `ctx`: oscillators, gains, filters, delays, compressors, stereo panners, wave shapers, convolvers with impulse responses you generate, and AudioBuffers you fill yourself (noise, drums). No fetch, no samples or files, no DOM, no timers, no Math.random: use a small seeded PRNG so every render is identical.
+- Keep it efficient: at most a few thousand scheduled nodes in total.
+- Mix: a master gain feeding a DynamicsCompressor, a comfortable level, no clipping, no harsh high frequencies.
+
+Musical quality: a polished instrumental soundtrack (no vocals) with a clear tempo and structure: bass, harmony, a memorable motif and percussion as the style calls for, with subtle effects (reverb, delay, filter sweeps, risers, whooshes, impacts).
+Synchronization: read the animation (CSS keyframes and delays, transitions, GSAP timelines, scenes) and place accents, transitions and sound effects on its key moments. Start immediately, and end with a clean final hit that rings out before {d} s.
+{style}
+
+Answer with the JavaScript code only, starting with `async function compose`. No explanation, no Markdown fences."#
+        )
+    }
+
+    /// Message joint aux consignes : description de l'animation et son HTML (pour la synchronisation).
+    pub fn music_code_message(context: &str, html: &str) -> String {
+        let html = if html.chars().count() > MUSIC_CODE_HTML_MAX {
+            html.chars().take(MUSIC_CODE_HTML_MAX).collect::<String>() + "\n<!-- … truncated -->"
+        } else {
+            html.to_string()
+        };
+        format!(
+            "About the animation:\n{}\n\nAnimation HTML (read it for timing):\n{html}\n\nWrite the soundtrack now.",
+            context.trim()
+        )
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn music_code_prompts() {
+            let s = music_code_system(20.0, "piano");
+            assert!(s.contains("async function compose") && s.contains("20 s") && s.contains("piano"));
+            let long = "x".repeat(50_000);
+            assert!(music_code_message("Brief: saut", &long).contains("truncated"));
+        }
 
         #[test]
         fn music_model_by_duration() {

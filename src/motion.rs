@@ -5,7 +5,10 @@
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use rustmotion_types::motion::{brief_message, music_model, refine_message, soundtrack_prompt, system_prompt, visible_text};
+use rustmotion_types::motion::{
+    brief_message, music_code_message, music_code_system, music_model, refine_message, soundtrack_prompt, system_prompt,
+    visible_text,
+};
 use rustmotion_types::Lang;
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +21,7 @@ use crate::tauri::{self, invoke};
 const KEY_MUSIC_STYLE: &str = "rustmotion.music.style";
 const KEY_WITH_MUSIC: &str = "rustmotion.music.auto";
 const KEY_SOUND: &str = "rustmotion.preview.sound";
+const KEY_MUSIC_ENGINE: &str = "rustmotion.music.engine";
 
 /// Durée d'un nouveau projet (s).
 const DEFAULT_DURATION: f64 = 20.0;
@@ -55,14 +59,48 @@ struct AiProgress {
     elapsed_ms: u64,
 }
 
-/// Bande son à composer : modèle musical, prix fixe (USD) et demande envoyée.
+/// Qui compose la bande son.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MusicEngine {
+    /// Le modèle de l'animation écrit le code Web Audio de la bande son (son synthétisé, calé sur l'animation).
+    Same,
+    /// Modèle musical Lyria 3 (musique réaliste, prix fixe).
+    Lyria,
+}
+
+impl MusicEngine {
+    fn key(self) -> &'static str {
+        match self {
+            MusicEngine::Same => "same",
+            MusicEngine::Lyria => "lyria",
+        }
+    }
+}
+
+/// Bande son à composer : moteur, modèle, coût (fixe pour Lyria, estimé sinon) et description.
 #[derive(Clone)]
 struct MusicPlan {
-    model: &'static str,
-    cost: f64,
+    engine: MusicEngine,
+    model: String,
+    cost: Option<f64>,
     duration: f64,
-    prompt: String,
+    /// Description de l'animation (brief, titre, textes à l'écran).
+    context: String,
+    style: String,
 }
+
+impl MusicPlan {
+    /// Ce que reçoit le modèle (montré dans la confirmation).
+    fn preview(&self) -> String {
+        match self.engine {
+            MusicEngine::Lyria => soundtrack_prompt(&self.context, self.duration, &self.style),
+            MusicEngine::Same => music_code_message(&self.context, "…").replace("…\n\nWrite", "[HTML]\n\nWrite"),
+        }
+    }
+}
+
+/// Réponse attendue du compositeur-codeur (une fonction compose() de quelques centaines de lignes).
+const MUSIC_CODE_TOKENS: usize = 5000;
 
 /// Requête payante préparée, en attente de confirmation.
 #[derive(Clone)]
@@ -260,11 +298,11 @@ fn fmt_clock(t: f64) -> String {
 const IMPORTED: &str = "Existing animation";
 
 /// Nom lisible d'un modèle musical.
-fn music_label(model: &str) -> &'static str {
-    if model == rustmotion_types::motion::MUSIC_CLIP_MODEL {
-        "Lyria 3 Clip"
-    } else {
-        "Lyria 3 Pro"
+fn music_label(model: &str) -> &str {
+    match model {
+        rustmotion_types::motion::MUSIC_CLIP_MODEL => "Lyria 3 Clip",
+        rustmotion_types::motion::MUSIC_FULL_MODEL => "Lyria 3 Pro",
+        other => other,
     }
 }
 
@@ -307,6 +345,7 @@ pub fn motion_tab(
     dropped_audio: RwSignal<Option<String>>,
     ai: AiSettings,
     settings_open: RwSignal<bool>,
+    browser_path: Signal<String>,
     source: Signal<String>,
     source_format: Signal<Option<SourceFormat>>,
     on_file: impl Fn(String) + Copy + Send + Sync + 'static,
@@ -342,6 +381,8 @@ pub fn motion_tab(
     // --- Bande son -----------------------------------------------------------
     let music_style = RwSignal::new(load(KEY_MUSIC_STYLE, ""));
     let with_music = RwSignal::new(load(KEY_WITH_MUSIC, "0") == "1");
+    // Par défaut, la bande son est écrite par le modèle de l'animation (choix mémorisé).
+    let music_engine = RwSignal::new(if load(KEY_MUSIC_ENGINE, "same") == "lyria" { MusicEngine::Lyria } else { MusicEngine::Same });
     let music = RwSignal::new(MusicGen::Idle);
     // Total réellement facturé pendant la session (USD).
     let spent = RwSignal::new(0.0f64);
@@ -578,22 +619,62 @@ pub fn motion_tab(
         });
     };
 
-    // Compose la bande son de l'animation `html` avec le modèle musical.
+    // Compose la bande son de l'animation `html` : modèle musical (Lyria), ou modèle de
+    // l'animation qui en écrit le code (rendu hors écran par le moteur).
     let run_music = move |html: String, plan: MusicPlan| {
         #[derive(Serialize)]
-        struct Req {
+        struct Chat {
             base_url: String,
             api_key: Option<String>,
-            model: &'static str,
+            model: String,
+            messages: Vec<ChatMessage>,
+        }
+        #[derive(Serialize)]
+        struct CodeReq {
+            chat: Chat,
+            html_path: String,
+            duration: f64,
+            browser_path: Option<String>,
+        }
+        #[derive(Serialize)]
+        struct LyriaReq {
+            base_url: String,
+            api_key: Option<String>,
+            model: String,
             prompt: String,
             html_path: String,
         }
         #[derive(Serialize)]
-        struct A {
-            req: Req,
+        struct A<R> {
+            req: R,
         }
         let (base_url, api_key) = ai.auth();
-        let a = A { req: Req { base_url, api_key, model: plan.model, prompt: plan.prompt, html_path: html.clone() } };
+        let call: (&'static str, Result<serde_json::Value, String>) = match plan.engine {
+            MusicEngine::Lyria => {
+                let prompt = soundtrack_prompt(&plan.context, plan.duration, &plan.style);
+                let req = LyriaReq { base_url, api_key, model: plan.model, prompt, html_path: html.clone() };
+                ("ai_soundtrack", serde_json::to_value(A { req }).map_err(|e| e.to_string()))
+            }
+            MusicEngine::Same => {
+                // Le HTML de l'animation sert à caler la musique sur ses moments clés.
+                let source = versions.with_untracked(|vs| {
+                    vs.iter().find(|v| v.path.as_deref() == Some(html.as_str())).map(|v| v.html.clone())
+                });
+                let messages = vec![
+                    ChatMessage { role: "system", content: music_code_system(plan.duration, &plan.style) },
+                    ChatMessage { role: "user", content: music_code_message(&plan.context, &source.unwrap_or_default()) },
+                ];
+                let req = CodeReq {
+                    chat: Chat { base_url, api_key, model: plan.model, messages },
+                    html_path: html.clone(),
+                    duration: plan.duration,
+                    browser_path: Some(browser_path.get_untracked()).filter(|p| !p.trim().is_empty()),
+                };
+                ("ai_soundtrack_code", serde_json::to_value(A { req }).map_err(|e| e.to_string()))
+            }
+        };
+        let (cmd, args) = call;
+        let Ok(args) = args else { return };
         music.set(MusicGen::Running(0));
         let tick = set_interval_with_handle(
             move || music.update(|m| if let MusicGen::Running(s) = m { *s += 1 }),
@@ -606,7 +687,7 @@ pub fn motion_tab(
                 path: String,
                 cost: Option<f64>,
             }
-            let res = invoke::<_, Option<MusicResult>>("ai_soundtrack", &a).await;
+            let res = invoke::<_, Option<MusicResult>>(cmd, &args).await;
             if let Some(t) = tick {
                 t.clear();
             }
@@ -622,9 +703,30 @@ pub fn motion_tab(
         });
     };
 
-    let plan_music = move |context: String, d: f64| {
-        let (model, cost) = music_model(d);
-        MusicPlan { model, cost, duration: d, prompt: soundtrack_prompt(&context, d, &music_style.get_untracked()) }
+    // Coût estimé d'un appel au modèle de texte, d'après ses tarifs (inconnu sans la liste du proxy).
+    let estimate_cost = move |model: &str, input_tokens: usize, output_tokens: usize| {
+        ai.models.with_untracked(|r| {
+            let info = r.as_ref()?.as_ref().ok()?.iter().find(|i| i.id == model)?;
+            Some(input_tokens as f64 * info.prompt? + output_tokens as f64 * info.completion?)
+        })
+    };
+
+    // Prépare la bande son selon le moteur choisi. `html_chars` : taille du HTML de l'animation
+    // (lu par le modèle de l'animation pour se caler dessus).
+    let plan_music = move |context: String, d: f64, html_chars: usize| {
+        let style = music_style.get_untracked();
+        match music_engine.get_untracked() {
+            MusicEngine::Lyria => {
+                let (model, cost) = music_model(d);
+                MusicPlan { engine: MusicEngine::Lyria, model: model.to_string(), cost: Some(cost), duration: d, context, style }
+            }
+            MusicEngine::Same => {
+                let model = ai.model.get_untracked().trim().to_string();
+                let sent = music_code_system(d, &style).chars().count() + context.chars().count() + html_chars.min(40_000);
+                let cost = estimate_cost(&model, estimate_tokens(sent), MUSIC_CODE_TOKENS);
+                MusicPlan { engine: MusicEngine::Same, model, cost, duration: d, context, style }
+            }
+        }
     };
 
     // Envoie la conversation au proxy, enregistre le résultat et l'ajoute aux versions.
@@ -744,6 +846,7 @@ pub fn motion_tab(
         ai.model.track();
         music_style.track();
         with_music.track();
+        music_engine.track();
         current.track();
         if prev.is_some() {
             pending.set(None);
@@ -754,7 +857,10 @@ pub fn motion_tab(
         let b = brief.get_untracked();
         let (w, h, d) = (width.get_untracked(), height.get_untracked(), duration.get_untracked());
         let msg = brief_message(&b);
-        let music = with_music.get_untracked().then(|| plan_music(format!("Brief: {}", clip_text(&b, 1500)), d));
+        // L'animation n'existe pas encore : on estime la taille de son HTML.
+        let music = with_music
+            .get_untracked()
+            .then(|| plan_music(format!("Brief: {}", clip_text(&b, 1500)), d, EXPECTED_OUTPUT_TOKENS * 7 / 2));
         ask_confirm(
             vec![
                 ChatMessage { role: "system", content: system_prompt(w, h, d) },
@@ -787,7 +893,7 @@ pub fn motion_tab(
         if !text.is_empty() {
             context.push_str(&format!("On-screen text: {text}"));
         }
-        pending.set(Some(Pending::Music { html_path: path, plan: plan_music(context, v.duration) }));
+        pending.set(Some(Pending::Music { html_path: path, plan: plan_music(context, v.duration, v.html.chars().count()) }));
     };
 
     let import_audio = move |audio: String| {
@@ -1173,7 +1279,10 @@ pub fn motion_tab(
                 <div class="card">
                     <div class="card-h">
                         <span class="step">"3"</span><h2>{move || m().music}</h2>
-                        <span class="card-meta">{move || music_label(music_model(version().map(|v| v.duration).unwrap_or(duration.get())).0)}</span>
+                        <span class="card-meta">{move || match music_engine.get() {
+                            MusicEngine::Lyria => music_label(music_model(version().map(|v| v.duration).unwrap_or(duration.get())).0).to_string(),
+                            MusicEngine::Same => ai.model.get(),
+                        }}</span>
                     </div>
                     // État : bande son de l'animation affichée, composition en cours, erreur.
                     <div class="music-state">
@@ -1214,6 +1323,18 @@ pub fn motion_tab(
                             }
                         }}
                     </div>
+                    // Qui compose : le modèle de l'animation (code audio synchronisé) ou Lyria 3 (musique réaliste).
+                    <div class="seg tight engine" role="radiogroup" aria-label=move || m().music_engine>
+                        {[MusicEngine::Same, MusicEngine::Lyria].into_iter().map(|e| view! {
+                            <button class="pill" role="radio" class:active=move || music_engine.get() == e
+                                aria-checked=move || (music_engine.get() == e).to_string()
+                                disabled=move || music_running()
+                                on:click=move |_| { music_engine.set(e); store(KEY_MUSIC_ENGINE, e.key()); }>
+                                <b>{move || if e == MusicEngine::Same { m().engine_same } else { m().engine_lyria }}</b>
+                                <small>{move || if e == MusicEngine::Same { m().engine_same_hint } else { m().engine_lyria_hint }}</small>
+                            </button>
+                        }).collect_view()}
+                    </div>
                     // Confirmation d'une bande son seule (payante).
                     {move || {
                         let l = lang.get();
@@ -1223,15 +1344,16 @@ pub fn motion_tab(
                             <div class="confirm" role="alertdialog" aria-labelledby="music-confirm-title">
                                 <strong id="music-confirm-title">{tx.confirm_music_title}</strong>
                                 <dl class="confirm-list">
-                                    <div><dt>{tx.confirm_model}</dt><dd>{music_label(plan.model)}</dd></div>
+                                    <div><dt>{tx.confirm_model}</dt><dd>{music_label(&plan.model).to_string()}</dd></div>
                                     <div><dt>{tx.duration_s}</dt><dd>{format!("{}", plan.duration)}</dd></div>
-                                    <div class="cost span2"><dt>{tx.confirm_cost}</dt><dd>{fmt_usd(l, plan.cost)}</dd></div>
+                                    <div class="cost span2"><dt>{tx.confirm_cost}</dt>
+                                        <dd>{plan.cost.map(|c| fmt_usd(l, c)).unwrap_or_else(|| tx.confirm_cost_unknown.to_string())}</dd></div>
                                 </dl>
                                 <details class="prompt">
                                     <summary>{tx.confirm_prompt}</summary>
-                                    <pre>{plan.prompt}</pre>
+                                    <pre>{plan.preview()}</pre>
                                 </details>
-                                <p class="hint small">{tx.confirm_music_note}</p>
+                                <p class="hint small">{if plan.engine == MusicEngine::Same { tx.confirm_music_code_note } else { tx.confirm_music_note }}</p>
                                 <div class="row">
                                     <button class="btn grow" on:click=move |_| pending.set(None)>{tx.confirm_no}</button>
                                     <button class="btn primary grow" on:click=move |_| confirm()>{tx.confirm_music_yes}</button>
@@ -1269,7 +1391,7 @@ pub fn motion_tab(
                                 with_music.set(on);
                             } />
                         <span class="sw"></span>
-                        <span>{move || m().music_with}<small>{move || m().music_with_hint}</small></span>
+                        <span>{move || m().music_with}<small>{move || if music_engine.get() == MusicEngine::Same { m().music_with_hint_same } else { m().music_with_hint }}</small></span>
                     </label>
                 </div>
 
@@ -1444,11 +1566,13 @@ pub fn motion_tab(
                         }
                         if let Some(Pending::Animation { refine, model, input_tokens, output_tokens, cost, music, .. }) = pending.get() {
                             // Total : animation (estimée) + bande son (prix fixe).
-                            let total = match (&cost, &music) {
-                                (Some(c), Some(mp)) => fmt_usd(l, c + mp.cost),
-                                (Some(c), None) => fmt_usd(l, *c),
-                                (None, Some(mp)) => format!("{} + {}", tx.confirm_cost_unknown, fmt_usd(l, mp.cost)),
+                            let total = match (cost, music.as_ref().map(|mp| mp.cost)) {
+                                (Some(c), None) => fmt_usd(l, c),
+                                (Some(c), Some(Some(mc))) => fmt_usd(l, c + mc),
                                 (None, None) => tx.confirm_cost_unknown.to_string(),
+                                (Some(c), Some(None)) => format!("{} + {}", fmt_usd(l, c), tx.confirm_cost_unknown),
+                                (None, Some(Some(mc))) => format!("{} + {}", tx.confirm_cost_unknown, fmt_usd(l, mc)),
+                                (None, Some(None)) => tx.confirm_cost_unknown.to_string(),
                             };
                             return view! {
                                 <div class="confirm" role="alertdialog" aria-labelledby="confirm-title">
@@ -1460,7 +1584,8 @@ pub fn motion_tab(
                                         <div class="cost"><dt>{tx.confirm_cost}</dt><dd>{total}</dd></div>
                                         {music.map(|mp| view! {
                                             <div class="span2"><dt>{tx.music}</dt>
-                                                <dd>{format!("{} · {}", music_label(mp.model), fmt_usd(l, mp.cost))}</dd></div>
+                                                <dd>{format!("{} · {}", music_label(&mp.model),
+                                                    mp.cost.map(|c| fmt_usd(l, c)).unwrap_or_else(|| tx.confirm_cost_unknown.to_string()))}</dd></div>
                                         })}
                                     </dl>
                                     <p class="hint small">{tx.confirm_note}</p>

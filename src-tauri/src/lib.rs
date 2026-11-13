@@ -201,6 +201,7 @@ pub fn run() {
             ai::attach_audio,
             ai::read_audio,
             ai::ai_soundtrack,
+            ai::ai_soundtrack_code,
             ai::detach_audio,
             ai::recent_files,
             set_lang,

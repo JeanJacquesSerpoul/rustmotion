@@ -3895,7 +3895,7 @@ dependencies = [
 
 [[package]]
 name = "rustmotion"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "pdf-extract",
@@ -3912,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "rustmotion-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3927,14 +3927,14 @@ dependencies = [
 
 [[package]]
 name = "rustmotion-types"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "rustmotion-ui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",

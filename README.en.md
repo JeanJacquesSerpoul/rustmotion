@@ -1,5 +1,7 @@
 # RustMotion
 
+[![Release](https://img.shields.io/github/v/release/JeanJacquesSerpoul/rustmotion?label=release)](https://github.com/JeanJacquesSerpoul/rustmotion/releases/latest)
+
 [Français](README.md) · **English**
 
 Converts **HTML / CSS / JS animations → video** (MP4, MOV, WebM), built with Rust + Tauri v2 + Leptos.

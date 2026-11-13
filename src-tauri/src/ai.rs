@@ -79,7 +79,8 @@ fn endpoint(base: &str) -> String {
 }
 
 /// Modèles proposés par le proxy (vide si la route `/models` n'est pas autorisée).
-#[tauri::command]
+/// Arguments en snake_case : le front envoie `base_url` / `api_key`.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn ai_models(base_url: String, api_key: Option<String>) -> Result<Vec<ModelInfo>, String> {
     blocking(move || {
         let url = format!("{}/models", api_base(&base_url));

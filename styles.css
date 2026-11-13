@@ -350,6 +350,23 @@ input[type=password]:focus { border-color: var(--accent-line); }
 .confirm-list dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .confirm-list .cost dd { color: var(--accent); }
 .result.warn { border-color: var(--accent-line); background: var(--accent-soft); }
+.confirm-list .span2 { grid-column: 1 / -1; }
+.confirm .prompt summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.confirm .prompt summary:hover { color: var(--text); }
+.confirm .prompt pre {
+  margin: 6px 0 0; padding: 8px 10px; max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  background: var(--well); border: 1px solid var(--line); border-radius: 6px; user-select: text;
+  font: 11.5px/1.5 Consolas, ui-monospace, monospace; color: var(--muted);
+}
+
+/* ---------- Bande son */
+.music-state { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 26px; }
+.music-state .result { flex-basis: 100%; }
+.music-state .chip em { font-style: normal; color: var(--dim); margin-left: 2px; }
+.music-file { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+.btn.sound { padding: 7px 11px; font-size: 15px; line-height: 1; color: var(--accent); }
+.btn.sound.off { color: var(--dim); text-decoration: line-through; }
+.lbl-tag { margin-left: 8px; padding: 0 7px; border-radius: 99px; font-size: 11px; color: var(--ok); background: var(--ok-soft); border: 1px solid rgba(143, 179, 155, .35); }
 .result.warn strong { color: var(--accent); font-weight: 500; font-size: 13px; }
 
 /* ---------- Glisser-déposer */

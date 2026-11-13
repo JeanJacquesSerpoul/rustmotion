@@ -21,4 +21,5 @@ serde_json = "1"
 rustmotion-engine = { path = "../crates/rustmotion-engine" }
 rustmotion-types = { path = "../crates/rustmotion-types" }
 ureq = "2"
+base64 = "0.22"
 pdf-extract = "0.12.1"

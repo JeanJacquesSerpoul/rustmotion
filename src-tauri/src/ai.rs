@@ -420,6 +420,8 @@ pub struct OpenedMotion {
     width: Option<u32>,
     height: Option<u32>,
     duration: Option<f64>,
+    /// Bande son compagnon (même nom, extension audio), si elle existe.
+    audio: Option<String>,
 }
 
 /// Contenu de `<meta name="rustmotion:{key}" content="…">` (ordre des attributs indifférent).
@@ -475,7 +477,8 @@ pub async fn open_motion(path: String) -> Result<Option<OpenedMotion>, String> {
         let num = |k: &str| rustmotion_meta(&html, k);
         let (width, height) = (num("width").and_then(|v| v.parse().ok()), num("height").and_then(|v| v.parse().ok()));
         let duration = num("duration").and_then(|v| v.parse().ok()).filter(|d: &f64| *d > 0.0);
-        Ok(Some(OpenedMotion { title: html_title(&html), html, width, height, duration }))
+        let audio = companion_of(&p).map(|a| a.display().to_string());
+        Ok(Some(OpenedMotion { title: html_title(&html), html, width, height, duration, audio }))
     })
     .await
 }
@@ -515,9 +518,246 @@ pub async fn save_copy(app: AppHandle, path: String) -> Result<Option<String>, S
     .await
 }
 
+// --- Bande son ----------------------------------------------------------------------------
+// Elle est rattachée à l'animation par son nom : « Mon anim.html » + « Mon anim.mp3 ».
+
+const MAX_AUDIO_FILE: u64 = 100 * 1024 * 1024;
+
+fn resolve_html(path: &str) -> Result<PathBuf, String> {
+    let mut p = PathBuf::from(path.trim().trim_matches('"'));
+    if p.is_dir() {
+        p = p.join("index.html");
+    }
+    if !p.is_file() {
+        return Err(format!("{}: {}", p.display(), tr!("fichier introuvable", "file not found")));
+    }
+    Ok(p)
+}
+
+/// Bande son compagnon d'une page HTML.
+fn companion_of(html: &Path) -> Option<PathBuf> {
+    let stem = html.file_stem()?.to_string_lossy();
+    rustmotion_engine::source::companion_audio(html.parent()?, &stem)
+}
+
+/// Écarte les bandes son compagnon existantes (renommées, jamais supprimées) avant d'en
+/// installer une nouvelle, pour que la détection ne retombe pas sur l'ancienne.
+fn set_aside_companions(html: &Path) -> Result<(), String> {
+    let (Some(dir), Some(stem)) = (html.parent(), html.file_stem().map(|s| s.to_string_lossy().into_owned())) else {
+        return Ok(());
+    };
+    for ext in rustmotion_types::AUDIO_EXTS {
+        let old = dir.join(format!("{stem}.{ext}"));
+        if !old.is_file() {
+            continue;
+        }
+        let label = tr!("ancienne bande son", "previous soundtrack");
+        let mut dest = dir.join(format!("{stem} ({label}).{ext}"));
+        let mut n = 2;
+        while dest.exists() {
+            dest = dir.join(format!("{stem} ({label} {n}).{ext}"));
+            n += 1;
+        }
+        std::fs::rename(&old, &dest).map_err(|e| format!("{}: {e}", old.display()))?;
+    }
+    Ok(())
+}
+
+/// Installe `bytes` comme bande son compagnon de la page et renvoie son chemin.
+fn install_audio(html: &Path, bytes: &[u8], ext: &str) -> Result<PathBuf, String> {
+    set_aside_companions(html)?;
+    let stem = html.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "animation".into());
+    let dest = html.with_file_name(format!("{stem}.{ext}"));
+    std::fs::write(&dest, bytes).map_err(|e| format!("{}: {e}", dest.display()))?;
+    Ok(dest)
+}
+
+/// Extension d'après la signature du fichier audio (MP3 par défaut).
+fn audio_ext(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+        "wav"
+    } else if bytes.starts_with(b"OggS") {
+        "ogg"
+    } else if bytes.starts_with(b"fLaC") {
+        "flac"
+    } else if bytes.get(4..8) == Some(b"ftyp") {
+        "m4a"
+    } else {
+        "mp3"
+    }
+}
+
+fn audio_mime(ext: &str) -> &'static str {
+    match ext {
+        "wav" => "audio/wav",
+        "ogg" | "opus" => "audio/ogg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        _ => "audio/mpeg",
+    }
+}
+
+/// Utilise un fichier audio existant comme bande son de l'animation (copié à côté d'elle,
+/// sous son nom). Renvoie le chemin de la bande son installée.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn attach_audio(html_path: String, audio_path: String) -> Result<String, String> {
+    blocking(move || {
+        let html = resolve_html(&html_path)?;
+        let src = PathBuf::from(audio_path.trim().trim_matches('"'));
+        let ext = src.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        if !rustmotion_types::AUDIO_EXTS.contains(&ext.as_str()) {
+            return Err(format!("{}: {}", src.display(), tr!("format audio non pris en charge", "unsupported audio format")));
+        }
+        // Déjà la bande son de cette animation : rien à faire.
+        if let Some(cur) = companion_of(&html) {
+            if matches!((cur.canonicalize(), src.canonicalize()), (Ok(a), Ok(b)) if a == b) {
+                return Ok(cur.display().to_string());
+            }
+        }
+        let size = std::fs::metadata(&src).map_err(|e| format!("{}: {e}", src.display()))?.len();
+        if size > MAX_AUDIO_FILE {
+            return Err(tr!("fichier audio trop volumineux (100 Mo max)", "audio file too large (100 MB max)").into());
+        }
+        let bytes = std::fs::read(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+        Ok(install_audio(&html, &bytes, &ext)?.display().to_string())
+    })
+    .await
+}
+
+/// Bande son en data URL, pour l'écouter dans l'aperçu avec l'animation.
+#[tauri::command]
+pub async fn read_audio(path: String) -> Result<String, String> {
+    use base64::Engine;
+    blocking(move || {
+        let p = PathBuf::from(path.trim().trim_matches('"'));
+        let size = std::fs::metadata(&p).map_err(|e| format!("{}: {e}", p.display()))?.len();
+        if size > MAX_AUDIO_FILE {
+            return Err(tr!("fichier audio trop volumineux (100 Mo max)", "audio file too large (100 MB max)").into());
+        }
+        let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        Ok(format!("data:{};base64,{}", audio_mime(&ext), base64::engine::general_purpose::STANDARD.encode(bytes)))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct MusicRequest {
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+    prompt: String,
+    /// Animation à laquelle rattacher la bande son.
+    html_path: String,
+}
+
+/// Compose une bande son avec un modèle musical (Lyria) et l'installe à côté de l'animation.
+/// Renvoie son chemin, ou `None` si la génération est annulée.
+#[tauri::command]
+pub async fn ai_soundtrack(state: State<'_, AiState>, req: MusicRequest) -> Result<Option<String>, String> {
+    let html = resolve_html(&req.html_path)?;
+    if state.busy.swap(true, Ordering::SeqCst) {
+        return Err(tr!("une génération est déjà en cours", "a generation is already running").into());
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    let cancel = state.cancel.clone();
+    let busy = state.busy.clone();
+    let res = blocking(move || {
+        let Some(bytes) = compose(&req, &cancel)? else { return Ok(None) };
+        Ok(Some(install_audio(&html, &bytes, audio_ext(&bytes))?.display().to_string()))
+    })
+    .await;
+    busy.store(false, Ordering::SeqCst);
+    res
+}
+
+/// Appel du modèle musical. OpenRouter renvoie l'audio en base64 dans le flux SSE
+/// (`choices[0].delta.audio.data`, éventuellement en plusieurs morceaux).
+fn compose(req: &MusicRequest, cancel: &AtomicBool) -> Result<Option<Vec<u8>>, String> {
+    use base64::Engine;
+    let url = endpoint(&req.base_url);
+    let body = json!({
+        "model": req.model.trim(),
+        "messages": [{"role": "user", "content": req.prompt}],
+        "modalities": ["text", "audio"],
+        "audio": {"format": "mp3"},
+        "stream": true,
+    });
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(20))
+        .timeout_read(Duration::from_secs(600))
+        .build();
+    let mut call = agent.post(&url).set("Content-Type", "application/json").set("Accept", "text/event-stream");
+    if let Some(key) = req.api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        call = call.set("Authorization", &format!("Bearer {key}"));
+    }
+    let resp = call.send_string(&body.to_string()).map_err(|e| http_error(&url, e))?;
+    let mut b64 = String::new();
+    let mut text = String::new();
+    if resp.content_type().contains("event-stream") {
+        let reader = BufReader::new(resp.into_reader());
+        for line in reader.lines() {
+            // Le proxy envoie des commentaires d'attente pendant la composition : l'annulation reste réactive.
+            if cancel.load(Ordering::SeqCst) {
+                return Ok(None);
+            }
+            let line = line.map_err(|e| format!("{}: {e}", tr!("flux interrompu", "stream interrupted")))?;
+            let Some(data) = line.strip_prefix("data:") else { continue };
+            let data = data.trim();
+            if data == "[DONE]" {
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+            if let Some(e) = api_error(&v) {
+                return Err(e);
+            }
+            let delta = &v["choices"][0]["delta"];
+            if let Some(s) = delta["audio"]["data"].as_str() {
+                b64.push_str(s);
+            }
+            if let Some(s) = delta["content"].as_str() {
+                text.push_str(s);
+            }
+        }
+    } else {
+        let mut raw = String::new();
+        resp.into_reader().read_to_string(&mut raw).map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", tr!("réponse illisible", "unreadable response")))?;
+        if let Some(e) = api_error(&v) {
+            return Err(e);
+        }
+        let msg = &v["choices"][0]["message"];
+        b64 = msg["audio"]["data"].as_str().unwrap_or_default().to_string();
+        text = msg["content"].as_str().unwrap_or_default().to_string();
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return Ok(None);
+    }
+    if b64.trim().is_empty() {
+        return Err(format!(
+            "{}\n{}",
+            tr!("le modèle n'a renvoyé aucun audio", "the model returned no audio"),
+            tail(&text, 400)
+        ));
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map(Some)
+        .map_err(|e| format!("{}: {e}", tr!("audio illisible", "unreadable audio")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_signatures() {
+        assert_eq!(audio_ext(b"ID3\x03\x00\x00"), "mp3");
+        assert_eq!(audio_ext(b"RIFF\x00\x00\x00\x00WAVEfmt "), "wav");
+        assert_eq!(audio_ext(b"OggS\x00"), "ogg");
+        assert_eq!(audio_ext(b"\x00\x00\x00\x20ftypM4A "), "m4a");
+    }
 
     #[test]
     fn endpoints() {

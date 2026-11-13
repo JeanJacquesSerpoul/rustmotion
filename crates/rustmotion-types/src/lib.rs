@@ -385,7 +385,13 @@ pub struct SourceFiles {
     pub script_found: bool,
     /// La page le charge déjà via `<script src>` ; sinon RustMotion l'ajoute.
     pub script_linked: bool,
+    /// Bande son compagnon de même nom (`page.html` → `page.mp3`…), chemin complet.
+    #[serde(default)]
+    pub audio: Option<String>,
 }
+
+/// Extensions reconnues pour la bande son compagnon, par ordre de préférence.
+pub const AUDIO_EXTS: [&str; 7] = ["mp3", "wav", "m4a", "aac", "ogg", "flac", "opus"];
 
 impl SourceFiles {
     /// Le script compagnon existe mais n'est pas chargé par la page : il sera ajouté.
@@ -444,5 +450,102 @@ Answer with the complete HTML document only, starting with <!DOCTYPE html> and e
             "Apply these changes to the animation, keep everything else, and return the complete updated HTML document:\n\n{}",
             instructions.trim()
         )
+    }
+
+    /// Modèle musical pour une bande son courte (clip de 30 s).
+    pub const MUSIC_CLIP_MODEL: &str = "google/lyria-3-clip-preview";
+    /// Modèle musical pour un morceau complet (animations de plus de 30 s).
+    pub const MUSIC_FULL_MODEL: &str = "google/lyria-3-pro-preview";
+    /// Durée d'un clip produit par le modèle court.
+    pub const MUSIC_CLIP_SECONDS: f64 = 30.0;
+
+    /// Modèle musical adapté à la durée de l'animation, et son prix fixe (USD par génération).
+    pub fn music_model(duration: f64) -> (&'static str, f64) {
+        if duration <= MUSIC_CLIP_SECONDS {
+            (MUSIC_CLIP_MODEL, 0.04)
+        } else {
+            (MUSIC_FULL_MODEL, 0.08)
+        }
+    }
+
+    /// Texte visible d'un document HTML (textes à l'écran), sans scripts, styles ni en-tête,
+    /// limité à `max` caractères : sert à décrire une animation existante au modèle musical.
+    pub fn visible_text(html: &str, max: usize) -> String {
+        let lower = html.to_ascii_lowercase();
+        let mut out = String::new();
+        let mut i = 0;
+        while i < html.len() {
+            if lower[i..].starts_with('<') {
+                // Saute aussi le contenu des balises sans texte visible.
+                let from = ["script", "style", "head", "title"]
+                    .into_iter()
+                    .find(|t| lower[i + 1..].starts_with(t))
+                    .and_then(|t| lower[i..].find(&format!("</{t}")).map(|e| i + e))
+                    .unwrap_or(i);
+                i = lower[from..].find('>').map_or(html.len(), |e| from + e + 1);
+                out.push(' ');
+                continue;
+            }
+            let next = lower[i..].find('<').map_or(html.len(), |e| i + e);
+            out.push_str(&html[i..next]);
+            i = next;
+        }
+        let text = out
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&#39;", "'")
+            .replace("&quot;", "\"");
+        let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if joined.chars().count() > max {
+            joined.chars().take(max).collect::<String>() + "…"
+        } else {
+            joined
+        }
+    }
+
+    /// Demande envoyée au modèle musical. `context` décrit l'animation (brief, ou titre et
+    /// textes d'une animation existante) ; `style` est le style musical souhaité (facultatif).
+    pub fn soundtrack_prompt(context: &str, duration: f64, style: &str) -> String {
+        let d = (duration * 10.0).round() / 10.0;
+        let style = match style.trim() {
+            "" => "Choose a style that matches the mood and pace of the animation.".to_string(),
+            s => format!("Musical style: {s}."),
+        };
+        format!(
+            "Instrumental soundtrack for a {d}-second motion design video. No vocals, no lyrics.\n{style}\n\
+             It starts immediately, follows the rhythm of the animation with clear accents on scene changes, \
+             and ends with a clean final hit at {d} seconds (anything after that will be cut).\n\n\
+             About the animation:\n{}",
+            context.trim()
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn music_model_by_duration() {
+            assert_eq!(music_model(8.0), (MUSIC_CLIP_MODEL, 0.04));
+            assert_eq!(music_model(30.0).0, MUSIC_CLIP_MODEL);
+            assert_eq!(music_model(68.0), (MUSIC_FULL_MODEL, 0.08));
+        }
+
+        #[test]
+        fn visible_text_skips_code() {
+            let h = "<html><head><title>T</title><style>.a{x:1}</style></head><body><h1>Un petit&nbsp;saut</h1>\
+                     <script>let a = '<b>';</script><p>pour toucher\n le ciel</p></body></html>";
+            assert_eq!(visible_text(h, 100), "Un petit saut pour toucher le ciel");
+            assert_eq!(visible_text(h, 8), "Un petit…");
+        }
+
+        #[test]
+        fn prompt_mentions_duration_and_style() {
+            let p = soundtrack_prompt("Brief: un saut", 8.0, "ukulélé joyeux");
+            assert!(p.contains("8-second") && p.contains("ukulélé joyeux") && p.contains("Brief: un saut"));
+            assert!(soundtrack_prompt("x", 12.25, "").contains("12.3-second"));
+        }
     }
 }

@@ -5,7 +5,7 @@
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use rustmotion_types::motion::{brief_message, refine_message, system_prompt};
+use rustmotion_types::motion::{brief_message, music_model, refine_message, soundtrack_prompt, system_prompt, visible_text};
 use rustmotion_types::Lang;
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +16,9 @@ use crate::tauri::{self, invoke};
 const KEY_URL: &str = "rustmotion.ai.url";
 const KEY_MODEL: &str = "rustmotion.ai.model";
 const KEY_KEY: &str = "rustmotion.ai.key";
+const KEY_MUSIC_STYLE: &str = "rustmotion.music.style";
+const KEY_WITH_MUSIC: &str = "rustmotion.music.auto";
+const KEY_SOUND: &str = "rustmotion.preview.sound";
 const DEFAULT_URL: &str = "http://127.0.0.1:9018/v1";
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-5.5";
 
@@ -56,17 +59,43 @@ struct ModelInfo {
     completion: Option<f64>,
 }
 
+/// Bande son à composer : modèle musical, prix fixe (USD) et demande envoyée.
+#[derive(Clone)]
+struct MusicPlan {
+    model: &'static str,
+    cost: f64,
+    duration: f64,
+    prompt: String,
+}
+
 /// Requête payante préparée, en attente de confirmation.
 #[derive(Clone)]
-struct Pending {
-    messages: Vec<ChatMessage>,
-    request: String,
-    refine: bool,
-    model: String,
-    input_tokens: usize,
-    output_tokens: usize,
-    /// Coût estimé en USD (inconnu si le proxy ne fournit pas le tarif du modèle).
-    cost: Option<f64>,
+enum Pending {
+    /// Génération (ou ajustement) de l'animation, éventuellement suivie de sa bande son.
+    Animation {
+        messages: Vec<ChatMessage>,
+        request: String,
+        refine: bool,
+        model: String,
+        input_tokens: usize,
+        output_tokens: usize,
+        /// Coût estimé en USD (inconnu si le proxy ne fournit pas le tarif du modèle).
+        cost: Option<f64>,
+        music: Option<MusicPlan>,
+        /// Bande son de la version ajustée, reprise par la nouvelle version.
+        carry_audio: Option<String>,
+    },
+    /// Bande son seule, pour l'animation affichée.
+    Music { html_path: String, plan: MusicPlan },
+}
+
+#[derive(Clone, PartialEq)]
+enum MusicGen {
+    Idle,
+    /// Composition en cours (secondes écoulées).
+    Running(u32),
+    Cancelled,
+    Error(String),
 }
 
 /// Réponse attendue pour une première génération (une animation de quelques scènes ≈ 10 000 caractères).
@@ -110,6 +139,34 @@ struct Version {
     sized: bool,
     /// Message utilisateur qui a produit cette version (brief ou ajustement).
     request: String,
+    /// Bande son compagnon (« anim.html » → « anim.mp3 »).
+    audio: Option<String>,
+}
+
+fn file_name(p: &str) -> String {
+    p.rsplit(['/', '\\']).next().unwrap_or(p).to_string()
+}
+
+/// Début de la « demande » d'une animation ouverte depuis un fichier (elle n'a pas de brief).
+const IMPORTED: &str = "Existing animation";
+
+/// Nom lisible d'un modèle musical.
+fn music_label(model: &str) -> &'static str {
+    if model == rustmotion_types::motion::MUSIC_CLIP_MODEL {
+        "Lyria 3 Clip"
+    } else {
+        "Lyria 3 Pro"
+    }
+}
+
+/// Texte limité à `max` caractères.
+fn clip_text(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() > max {
+        s.chars().take(max).collect::<String>() + "…"
+    } else {
+        s.to_string()
+    }
 }
 
 /// Format détecté par l'analyse de l'onglet Conversion pour le fichier courant.
@@ -146,14 +203,17 @@ fn fmt_secs(ms: u64) -> String {
 
 /// Construit l'onglet. `source` est l'animation de la barre commune : un HTML choisi ailleurs
 /// s'affiche ici, et chaque version affichée ici y est envoyée par `on_file`.
-/// `on_convert` passe à l'onglet Conversion.
+/// `on_audio(html, audio)` signale une nouvelle bande son ; `on_convert` passe à l'onglet Conversion.
+#[allow(clippy::too_many_arguments)]
 pub fn motion_tab(
     lang: RwSignal<Lang>,
     active: Signal<bool>,
     dropped_doc: RwSignal<Option<String>>,
+    dropped_audio: RwSignal<Option<String>>,
     source: Signal<String>,
     source_format: Signal<Option<SourceFormat>>,
     on_file: impl Fn(String) + Copy + Send + Sync + 'static,
+    on_audio: impl Fn(String, String) + Copy + Send + Sync + 'static,
     on_convert: impl Fn() + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let in_tauri = tauri::available();
@@ -185,8 +245,19 @@ pub fn motion_tab(
     let replay = RwSignal::new(0u32);
     let pending = RwSignal::new(None::<Pending>);
 
+    // --- Bande son -----------------------------------------------------------
+    let music_style = RwSignal::new(load(KEY_MUSIC_STYLE, ""));
+    let with_music = RwSignal::new(load(KEY_WITH_MUSIC, "0") == "1");
+    let music = RwSignal::new(MusicGen::Idle);
+    let sound_on = RwSignal::new(load(KEY_SOUND, "1") == "1");
+    // Bande son de la version affichée, en data URL pour l'aperçu.
+    let audio_src = RwSignal::new(None::<String>);
+
     let version = move || versions.with(|v| v.get(current.get()).cloned());
     let running = move || gen.get() == Gen::Running;
+    let music_running = move || matches!(music.get(), MusicGen::Running(_));
+    // Le proxy ne traite qu'une génération à la fois (animation ou bande son).
+    let busy = move || running() || music_running();
 
     let refresh_models = move || {
         if !in_tauri {
@@ -235,7 +306,7 @@ pub fn motion_tab(
     // Animation choisie dans la barre commune : elle devient l'animation affichée ici.
     Effect::new(move |_| {
         let path = source.get().trim().trim_matches('"').to_string();
-        if path.is_empty() || gen.get_untracked() == Gen::Running {
+        if path.is_empty() || gen.get_untracked() == Gen::Running || matches!(music.get_untracked(), MusicGen::Running(_)) {
             return;
         }
         // Déjà dans l'historique (version générée ici) : on l'affiche simplement.
@@ -256,6 +327,7 @@ pub fn motion_tab(
             width: Option<u32>,
             height: Option<u32>,
             duration: Option<f64>,
+            audio: Option<String>,
         }
         spawn_local(async move {
             let Ok(Some(o)) = invoke::<_, Option<Opened>>("open_motion", &A { path: path.clone() }).await else { return };
@@ -284,7 +356,8 @@ pub fn motion_tab(
                 height: h,
                 duration: d,
                 sized,
-                request: format!("Existing animation \"{name}\", opened from a file."),
+                request: format!("{IMPORTED} \"{name}\", opened from a file."),
+                audio: o.audio,
             }]);
             current.set(0);
             refine.set(String::new());
@@ -335,8 +408,85 @@ pub fn motion_tab(
         });
     };
 
+    let ai_auth = move || {
+        let key = ai_key.get_untracked();
+        (ai_url.get_untracked(), (!key.trim().is_empty()).then_some(key))
+    };
+
+    // Rattache une bande son à la version dont le fichier est `html`, et la signale à la conversion.
+    let set_version_audio = move |html: String, audio: String| {
+        versions.update(|vs| {
+            for v in vs.iter_mut().filter(|v| v.path.as_deref() == Some(html.as_str())) {
+                v.audio = Some(audio.clone());
+            }
+        });
+        on_audio(html, audio);
+    };
+
+    // Utilise un fichier audio existant comme bande son de l'animation `html`.
+    let attach = move |html: String, audio: String| {
+        #[derive(Serialize)]
+        struct A {
+            html_path: String,
+            audio_path: String,
+        }
+        spawn_local(async move {
+            match invoke::<_, String>("attach_audio", &A { html_path: html.clone(), audio_path: audio }).await {
+                Ok(p) => {
+                    set_version_audio(html, p);
+                    music.set(MusicGen::Idle);
+                }
+                Err(e) => music.set(MusicGen::Error(e)),
+            }
+        });
+    };
+
+    // Compose la bande son de l'animation `html` avec le modèle musical.
+    let run_music = move |html: String, plan: MusicPlan| {
+        #[derive(Serialize)]
+        struct Req {
+            base_url: String,
+            api_key: Option<String>,
+            model: &'static str,
+            prompt: String,
+            html_path: String,
+        }
+        #[derive(Serialize)]
+        struct A {
+            req: Req,
+        }
+        let (base_url, api_key) = ai_auth();
+        let a = A { req: Req { base_url, api_key, model: plan.model, prompt: plan.prompt, html_path: html.clone() } };
+        music.set(MusicGen::Running(0));
+        let tick = set_interval_with_handle(
+            move || music.update(|m| if let MusicGen::Running(s) = m { *s += 1 }),
+            std::time::Duration::from_secs(1),
+        )
+        .ok();
+        spawn_local(async move {
+            let res = invoke::<_, Option<String>>("ai_soundtrack", &a).await;
+            if let Some(t) = tick {
+                t.clear();
+            }
+            match res {
+                Ok(Some(p)) => {
+                    set_version_audio(html, p);
+                    music.set(MusicGen::Idle);
+                }
+                Ok(None) => music.set(MusicGen::Cancelled),
+                Err(e) => music.set(MusicGen::Error(e)),
+            }
+        });
+    };
+
+    let plan_music = move |context: String, d: f64| {
+        let (model, cost) = music_model(d);
+        MusicPlan { model, cost, duration: d, prompt: soundtrack_prompt(&context, d, &music_style.get_untracked()) }
+    };
+
     // Envoie la conversation au proxy, enregistre le résultat et l'ajoute aux versions.
-    let run = move |messages: Vec<ChatMessage>, request: String| {
+    // Ensuite : compose sa bande son (`music`), ou reprend celle de la version ajustée (`carry_audio`).
+    let run = move |messages: Vec<ChatMessage>, request: String, music_plan: Option<MusicPlan>, carry_audio: Option<String>| {
         #[derive(Serialize)]
         struct Req {
             base_url: String,
@@ -348,15 +498,8 @@ pub fn motion_tab(
         struct A {
             req: Req,
         }
-        let key = ai_key.get_untracked();
-        let a = A {
-            req: Req {
-                base_url: ai_url.get_untracked(),
-                api_key: (!key.trim().is_empty()).then_some(key),
-                model: ai_model.get_untracked(),
-                messages,
-            },
-        };
+        let (base_url, api_key) = ai_auth();
+        let a = A { req: Req { base_url, api_key, model: ai_model.get_untracked(), messages } };
         let (w, h, d) = (width.get_untracked(), height.get_untracked(), duration.get_untracked());
         gen.set(Gen::Running);
         progress.set(None);
@@ -378,7 +521,7 @@ pub fn motion_tab(
                     versions.update(|v| {
                         v.push(Version {
                             html: r.html,
-                            path,
+                            path: path.clone(),
                             truncated: r.truncated,
                             model: r.model,
                             width: w,
@@ -386,11 +529,19 @@ pub fn motion_tab(
                             duration: d,
                             sized: true,
                             request,
+                            audio: None,
                         })
                     });
                     current.set(versions.with_untracked(|v| v.len() - 1));
                     refine.set(String::new());
                     gen.set(Gen::Idle);
+                    if let Some(p) = path {
+                        match (music_plan, carry_audio) {
+                            (Some(plan), _) => run_music(p, plan),
+                            (None, Some(a)) => attach(p, a),
+                            _ => {}
+                        }
+                    }
                 }
                 Ok(None) => gen.set(Gen::Cancelled),
                 Err(e) => gen.set(Gen::Error(e)),
@@ -400,7 +551,12 @@ pub fn motion_tab(
 
     // Toute génération est payante : on prépare la requête, on estime son coût,
     // et elle ne part qu'après confirmation explicite.
-    let ask_confirm = move |messages: Vec<ChatMessage>, request: String, refine: bool, output_tokens: usize| {
+    let ask_confirm = move |messages: Vec<ChatMessage>,
+                            request: String,
+                            refine: bool,
+                            output_tokens: usize,
+                            music: Option<MusicPlan>,
+                            carry_audio: Option<String>| {
         let model = ai_model.get_untracked().trim().to_string();
         let input_tokens = estimate_tokens(messages.iter().map(|m| m.content.chars().count()).sum());
         let price = models.with_untracked(|r| {
@@ -410,13 +566,25 @@ pub fn motion_tab(
             Some((Some(p), Some(c))) => Some(input_tokens as f64 * p + output_tokens as f64 * c),
             _ => None,
         };
-        pending.set(Some(Pending { messages, request, refine, model, input_tokens, output_tokens, cost }));
+        pending.set(Some(Pending::Animation {
+            messages,
+            request,
+            refine,
+            model,
+            input_tokens,
+            output_tokens,
+            cost,
+            music,
+            carry_audio,
+        }));
     };
 
     let confirm = move || {
-        if let Some(p) = pending.get_untracked() {
-            pending.set(None);
-            run(p.messages, p.request);
+        let Some(p) = pending.get_untracked() else { return };
+        pending.set(None);
+        match p {
+            Pending::Animation { messages, request, music, carry_audio, .. } => run(messages, request, music, carry_audio),
+            Pending::Music { html_path, plan } => run_music(html_path, plan),
         }
     };
 
@@ -428,6 +596,9 @@ pub fn motion_tab(
         height.track();
         duration.track();
         ai_model.track();
+        music_style.track();
+        with_music.track();
+        current.track();
         if prev.is_some() {
             pending.set(None);
         }
@@ -437,6 +608,7 @@ pub fn motion_tab(
         let b = brief.get_untracked();
         let (w, h, d) = (width.get_untracked(), height.get_untracked(), duration.get_untracked());
         let msg = brief_message(&b);
+        let music = with_music.get_untracked().then(|| plan_music(format!("Brief: {}", clip_text(&b, 1500)), d));
         ask_confirm(
             vec![
                 ChatMessage { role: "system", content: system_prompt(w, h, d) },
@@ -445,8 +617,55 @@ pub fn motion_tab(
             b,
             false,
             EXPECTED_OUTPUT_TOKENS,
+            music,
+            None,
         );
     };
+
+    // Bande son seule, pour l'animation affichée : décrite par son brief et ses textes à l'écran.
+    let compose_music = move || {
+        let Some(v) = version() else { return };
+        let Some(path) = v.path.clone() else { return };
+        let first = versions.with_untracked(|vs| vs.first().map(|f| f.request.clone())).unwrap_or_default();
+        let mut context = String::new();
+        if let Some(rest) = first.strip_prefix(IMPORTED) {
+            // Animation ouverte depuis un fichier : pas de brief, seulement son titre.
+            let title = rest.split('"').nth(1).unwrap_or_default();
+            if !title.is_empty() {
+                context.push_str(&format!("Title: {title}\n"));
+            }
+        } else if !first.trim().is_empty() {
+            context.push_str(&format!("Brief: {}\n", clip_text(&first, 1500)));
+        }
+        let text = visible_text(&v.html, 600);
+        if !text.is_empty() {
+            context.push_str(&format!("On-screen text: {text}"));
+        }
+        pending.set(Some(Pending::Music { html_path: path, plan: plan_music(context, v.duration) }));
+    };
+
+    let import_audio = move |audio: String| {
+        if let Some(p) = version().and_then(|v| v.path) {
+            attach(p, audio);
+        }
+    };
+    let pick_audio = move || {
+        #[derive(Serialize)]
+        struct A {
+            kind: &'static str,
+        }
+        spawn_local(async move {
+            if let Ok(Some(p)) = invoke::<_, Option<String>>("pick_file", &A { kind: "audio" }).await {
+                import_audio(p);
+            }
+        });
+    };
+    Effect::new(move |_| {
+        if let Some(a) = dropped_audio.get() {
+            dropped_audio.set(None);
+            import_audio(a);
+        }
+    });
 
     let apply_refine = move || {
         let Some(v) = version() else { return };
@@ -472,6 +691,9 @@ pub fn motion_tab(
             instr,
             true,
             output_tokens,
+            None,
+            // La version ajustée garde la bande son de celle dont elle part.
+            v.audio.clone(),
         );
     };
 
@@ -508,6 +730,58 @@ pub fn motion_tab(
         set_timeout(measure, std::time::Duration::from_millis(30));
     });
 
+    // --- Aperçu sonore : la bande son repart de zéro à chaque chargement de l'animation.
+    let audio_ref = NodeRef::<html::Audio>::new();
+    let version_audio = Memo::new(move |_| versions.with(|vs| vs.get(current.get()).and_then(|v| v.audio.clone())));
+    Effect::new(move |_| {
+        let Some(path) = version_audio.get() else {
+            audio_src.set(None);
+            return;
+        };
+        #[derive(Serialize)]
+        struct A {
+            path: String,
+        }
+        spawn_local(async move {
+            if let Ok(url) = invoke::<_, String>("read_audio", &A { path: path.clone() }).await {
+                if version_audio.get_untracked().as_deref() == Some(path.as_str()) {
+                    audio_src.set(Some(url));
+                    // Relance l'animation pour qu'image et son partent ensemble.
+                    replay.update(|r| *r += 1);
+                }
+            }
+        });
+    });
+    let stop_audio = move || {
+        if let Some(el) = audio_ref.get_untracked() {
+            let _ = el.pause();
+        }
+    };
+    let play_audio = move || {
+        let Some(el) = audio_ref.get_untracked() else { return };
+        let _ = el.pause();
+        el.set_current_time(0.0);
+        if sound_on.get_untracked() && audio_src.with_untracked(Option::is_some) && active.get_untracked() {
+            let _ = el.play();
+        }
+    };
+    // Pas de son pendant une génération, ni quand l'onglet est masqué.
+    Effect::new(move |_| {
+        if running() || !active.get() {
+            stop_audio();
+        }
+    });
+    let toggle_sound = move || {
+        let on = !sound_on.get_untracked();
+        sound_on.set(on);
+        store(KEY_SOUND, if on { "1" } else { "0" });
+        if on {
+            replay.update(|r| *r += 1);
+        } else {
+            stop_audio();
+        }
+    };
+
     let set_duration = move |s: String| {
         if let Ok(v) = s.trim().replace(',', ".").parse::<f64>() {
             if v > 0.0 {
@@ -515,9 +789,12 @@ pub fn motion_tab(
             }
         }
     };
-    let can_call = move || in_tauri && !running() && !ai_model.get().trim().is_empty();
+    let can_call = move || in_tauri && !busy() && !ai_model.get().trim().is_empty();
     let can_generate = move || can_call() && !brief.get().trim().is_empty();
     let can_refine = move || can_call() && version().is_some() && !refine.get().trim().is_empty();
+    // Bande son : il faut une animation enregistrée sur le disque.
+    let has_file = move || version().is_some_and(|v| v.path.is_some());
+    let can_music = move || in_tauri && !busy() && has_file();
 
     view! {
         <main class="grid motion" class:hidden=move || !active.get()>
@@ -588,10 +865,102 @@ pub fn motion_tab(
                     </div>
                 </div>
 
+                // ---------------- Bande son
+                <div class="card">
+                    <div class="card-h">
+                        <span class="step">"3"</span><h2>{move || m().music}</h2>
+                        <span class="card-meta">{move || music_label(music_model(version().map(|v| v.duration).unwrap_or(duration.get())).0)}</span>
+                    </div>
+                    // État : bande son de l'animation affichée, composition en cours, erreur.
+                    <div class="music-state">
+                        {move || {
+                            let l = lang.get();
+                            let tx = motion_texts(l);
+                            match music.get() {
+                                MusicGen::Running(s) => view! {
+                                    <span class="chip"><span class="spin"></span>{tx.music_running}<em>{fmt_secs(s as u64 * 1000)}</em></span>
+                                    <button class="link push" on:click=move |_| cancel()>{tx.cancel}</button>
+                                }.into_any(),
+                                state => {
+                                    let current_audio = version().and_then(|v| v.audio);
+                                    view! {
+                                        {match current_audio {
+                                            Some(a) => view! { <span class="chip ok music-file" title=a.clone()>"♪ "{file_name(&a)}</span> }.into_any(),
+                                            None if version().is_some() => view! { <span class="hint">{tx.music_none}</span> }.into_any(),
+                                            None => view! { <span class="hint">{tx.music_need_anim}</span> }.into_any(),
+                                        }}
+                                        {match state {
+                                            MusicGen::Error(e) => Some(view! { <div class="result err"><strong>{tx.music_failed}</strong><pre>{e}</pre></div> }.into_any()),
+                                            MusicGen::Cancelled => Some(view! { <span class="hint">{tx.music_cancelled}</span> }.into_any()),
+                                            _ => None,
+                                        }}
+                                    }.into_any()
+                                }
+                            }
+                        }}
+                    </div>
+                    // Confirmation d'une bande son seule (payante).
+                    {move || {
+                        let l = lang.get();
+                        let tx = motion_texts(l);
+                        let Some(Pending::Music { plan, .. }) = pending.get() else { return None };
+                        Some(view! {
+                            <div class="confirm" role="alertdialog" aria-labelledby="music-confirm-title">
+                                <strong id="music-confirm-title">{tx.confirm_music_title}</strong>
+                                <dl class="confirm-list">
+                                    <div><dt>{tx.confirm_model}</dt><dd>{music_label(plan.model)}</dd></div>
+                                    <div><dt>{tx.duration_s}</dt><dd>{format!("{}", plan.duration)}</dd></div>
+                                    <div class="cost span2"><dt>{tx.confirm_cost}</dt><dd>{fmt_usd(l, plan.cost)}</dd></div>
+                                </dl>
+                                <details class="prompt">
+                                    <summary>{tx.confirm_prompt}</summary>
+                                    <pre>{plan.prompt}</pre>
+                                </details>
+                                <p class="hint small">{tx.confirm_music_note}</p>
+                                <div class="row">
+                                    <button class="btn grow" on:click=move |_| pending.set(None)>{tx.confirm_no}</button>
+                                    <button class="btn primary grow" on:click=move |_| confirm()>{tx.confirm_music_yes}</button>
+                                </div>
+                            </div>
+                        })
+                    }}
+                    <div class="row">
+                        <button class="btn grow" on:click=move |_| pick_audio() disabled=move || !can_music()
+                            title=move || if has_file() { m().music_import_title } else { m().music_need_anim }>
+                            {move || m().music_import}
+                        </button>
+                        <button class="btn grow" on:click=move |_| compose_music()
+                            disabled=move || !can_music() || matches!(pending.get(), Some(Pending::Music { .. }))
+                            title=move || if has_file() { "" } else { m().music_need_anim }>
+                            {move || if version().is_some_and(|v| v.audio.is_some()) { m().music_recompose } else { m().music_compose }}
+                        </button>
+                    </div>
+                    <div class="field">
+                        <label class="lbl" for="music-style">{move || m().music_style}</label>
+                        <input id="music-style" type="text" spellcheck="false" placeholder=move || m().music_style_placeholder
+                            prop:value=move || music_style.get()
+                            on:change=move |ev| {
+                                let v = event_target_value(&ev).trim().to_string();
+                                store(KEY_MUSIC_STYLE, &v);
+                                music_style.set(v);
+                            } />
+                    </div>
+                    <label class="toggle">
+                        <input type="checkbox" prop:checked=move || with_music.get()
+                            on:change=move |ev| {
+                                let on = event_target_checked(&ev);
+                                store(KEY_WITH_MUSIC, if on { "1" } else { "0" });
+                                with_music.set(on);
+                            } />
+                        <span class="sw"></span>
+                        <span>{move || m().music_with}<small>{move || m().music_with_hint}</small></span>
+                    </label>
+                </div>
+
                 // ---------------- Modèle IA
                 <div class="card">
                     <div class="card-h">
-                        <span class="step">"3"</span><h2>{move || m().ai}</h2>
+                        <span class="step">"4"</span><h2>{move || m().ai}</h2>
                         <span class="card-meta">{move || ai_model.get()}</span>
                     </div>
                     <div class="field">
@@ -683,7 +1052,7 @@ pub fn motion_tab(
                                     let doc = format!("{}\n<!-- {run} -->", v.html);
                                     view! {
                                         <iframe class="mframe" sandbox="allow-scripts" srcdoc=doc
-                                            title=motion_texts(l).preview
+                                            title=motion_texts(l).preview on:load=move |_| play_audio()
                                             style=move || {
                                                 // Ajusté et centré : le cadre peut être plafonné en hauteur (formats verticaux).
                                                 let (cw, ch) = stage_size.get();
@@ -704,9 +1073,26 @@ pub fn motion_tab(
                             format!("{w}×{h} · {d} s")
                         }}</span>
                     </div>
+                    <audio node_ref=audio_ref preload="auto" src=move || audio_src.get().unwrap_or_default()
+                        on:timeupdate=move |_| {
+                            // La bande son s'arrête avec l'animation (le clip peut être plus long).
+                            if let (Some(el), Some(v)) = (audio_ref.get_untracked(), version()) {
+                                if el.current_time() >= v.duration {
+                                    let _ = el.pause();
+                                }
+                            }
+                        }></audio>
                     <Show when=move || version().is_some() && !running()>
                         <div class="row">
                             <button class="btn" on:click=move |_| replay.update(|r| *r += 1)>{move || m().replay}</button>
+                            <Show when=move || audio_src.with(Option::is_some)>
+                                <button class="btn ghost sound" class:off=move || !sound_on.get()
+                                    title=move || if sound_on.get() { m().sound_mute } else { m().sound_unmute }
+                                    aria-pressed=move || sound_on.get().to_string()
+                                    on:click=move |_| toggle_sound()>
+                                    "♪"
+                                </button>
+                            </Show>
                             {move || {
                                 let n = versions.with(Vec::len);
                                 (n > 1).then(|| view! {
@@ -734,16 +1120,26 @@ pub fn motion_tab(
                                 <button class="btn danger wide" on:click=move |_| cancel()>{tx.cancel}</button>
                             }.into_any();
                         }
-                        if let Some(p) = pending.get() {
+                        if let Some(Pending::Animation { refine, model, input_tokens, output_tokens, cost, music, .. }) = pending.get() {
+                            // Total : animation (estimée) + bande son (prix fixe).
+                            let total = match (&cost, &music) {
+                                (Some(c), Some(mp)) => fmt_usd(l, c + mp.cost),
+                                (Some(c), None) => fmt_usd(l, *c),
+                                (None, Some(mp)) => format!("{} + {}", tx.confirm_cost_unknown, fmt_usd(l, mp.cost)),
+                                (None, None) => tx.confirm_cost_unknown.to_string(),
+                            };
                             return view! {
                                 <div class="confirm" role="alertdialog" aria-labelledby="confirm-title">
-                                    <strong id="confirm-title">{if p.refine { tx.confirm_refine_title } else { tx.confirm_title }}</strong>
+                                    <strong id="confirm-title">{if refine { tx.confirm_refine_title } else { tx.confirm_title }}</strong>
                                     <dl class="confirm-list">
-                                        <div><dt>{tx.confirm_model}</dt><dd>{p.model.clone()}</dd></div>
-                                        <div><dt>{tx.confirm_sent}</dt><dd>{fmt_tokens(l, p.input_tokens)}</dd></div>
-                                        <div><dt>{tx.confirm_reply}</dt><dd>{fmt_tokens(l, p.output_tokens)}</dd></div>
-                                        <div class="cost"><dt>{tx.confirm_cost}</dt>
-                                            <dd>{p.cost.map(|c| fmt_usd(l, c)).unwrap_or_else(|| tx.confirm_cost_unknown.to_string())}</dd></div>
+                                        <div><dt>{tx.confirm_model}</dt><dd>{model}</dd></div>
+                                        <div><dt>{tx.confirm_sent}</dt><dd>{fmt_tokens(l, input_tokens)}</dd></div>
+                                        <div><dt>{tx.confirm_reply}</dt><dd>{fmt_tokens(l, output_tokens)}</dd></div>
+                                        <div class="cost"><dt>{tx.confirm_cost}</dt><dd>{total}</dd></div>
+                                        {music.map(|mp| view! {
+                                            <div class="span2"><dt>{tx.music}</dt>
+                                                <dd>{format!("{} · {}", music_label(mp.model), fmt_usd(l, mp.cost))}</dd></div>
+                                        })}
                                     </dl>
                                     <p class="hint small">{tx.confirm_note}</p>
                                     <div class="row">

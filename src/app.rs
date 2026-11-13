@@ -157,6 +157,10 @@ pub fn App() -> impl IntoView {
     let tab = RwSignal::new(Tab::Motion);
     // Brief (PDF / texte) déposé sur la fenêtre, transmis à l'onglet Motion design.
     let dropped_doc = RwSignal::new(None::<String>);
+    // Fichier audio déposé sur l'onglet Motion design : il devient la bande son de l'animation.
+    let dropped_audio = RwSignal::new(None::<String>);
+    // La piste audio de l'export vient de la bande son compagnon (et suit donc l'animation).
+    let audio_auto = RwSignal::new(true);
     // Résultat de « Sauvegarder » dans la barre commune, rattaché au fichier copié.
     let copy_status = RwSignal::new(None::<(String, Result<String, String>)>);
 
@@ -272,23 +276,43 @@ pub fn App() -> impl IntoView {
         dims
     });
 
+    // Fichiers de la source (script et bande son compagnon), relus sans navigateur.
+    let refresh_files = move || {
+        let path = input.get_untracked();
+        if path.trim().is_empty() {
+            return;
+        }
+        #[derive(Serialize)]
+        struct A {
+            input: String,
+        }
+        spawn_local(async move {
+            if let Ok(f) = invoke::<_, SourceFiles>("inspect_source", &A { input: path.clone() }).await {
+                // Ignore une réponse arrivée après un changement de source.
+                if input.get_untracked() == path {
+                    files.set(Some(f));
+                }
+            }
+        });
+    };
+
+    // Bande son compagnon : elle devient la piste audio de l'export, sauf choix manuel.
+    Effect::new(move |_| {
+        let companion = files.with(|f| f.as_ref().and_then(|f| f.audio.clone()));
+        if audio_auto.get_untracked() {
+            audio.set(companion.unwrap_or_default());
+        }
+    });
+
     let set_input = move |path: String| {
         input.set(path.clone());
         files.set(None);
-        if !path.trim().is_empty() {
-            #[derive(Serialize)]
-            struct A {
-                input: String,
-            }
-            spawn_local(async move {
-                if let Ok(f) = invoke::<_, SourceFiles>("inspect_source", &A { input: path.clone() }).await {
-                    // Ignore une réponse arrivée après un changement de source.
-                    if input.get_untracked() == path {
-                        files.set(Some(f));
-                    }
-                }
-            });
+        // Une piste choisie à la main reste ; sinon elle suivra la nouvelle animation.
+        if audio_auto.get_untracked() || audio.get_untracked().trim().is_empty() {
+            audio_auto.set(true);
+            audio.set(String::new());
         }
+        refresh_files();
         probe_info.set(None);
         preview.set(None);
         if matches!(phase.get_untracked(), Phase::Done(_) | Phase::Error(_) | Phase::Cancelled) {
@@ -311,6 +335,9 @@ pub fn App() -> impl IntoView {
                     target.set(p);
                     if kind == "exe" {
                         refresh_tools();
+                    }
+                    if kind == "audio" {
+                        audio_auto.set(false);
                     }
                 }
             }
@@ -445,8 +472,14 @@ pub fn App() -> impl IntoView {
                     .iter()
                     .any(|e| lower.ends_with(e));
                 if is_audio {
-                    tab.set(Tab::Convert);
-                    audio.set(p);
+                    // Sur l'onglet Motion design, avec une animation : c'est sa bande son.
+                    if tab.get_untracked() == Tab::Motion && !input.get_untracked().trim().is_empty() {
+                        dropped_audio.set(Some(p));
+                    } else {
+                        tab.set(Tab::Convert);
+                        audio_auto.set(false);
+                        audio.set(p);
+                    }
                 } else {
                     // L'animation va dans la barre commune : l'onglet affiché ne change pas.
                     set_input(p);
@@ -563,6 +596,9 @@ pub fn App() -> impl IntoView {
                                     (!label.is_empty()).then(|| view! { <span class="chip">{label}</span> })
                                 }).map(|v| v.into_any())
                             }}
+                            {move || files.get().and_then(|f| f.audio).map(|a| view! {
+                                <span class="chip ok" title=a.clone()>"♪ "{file_name(&a)}</span>
+                            })}
                             {move || {
                                 let m = i18n::motion_texts(lang.get());
                                 copy_status.get().filter(|(src, _)| *src == input.get()).map(|(_, r)| match r {
@@ -610,12 +646,21 @@ pub fn App() -> impl IntoView {
                 lang,
                 Signal::derive(move || tab.get() == Tab::Motion),
                 dropped_doc,
+                dropped_audio,
                 Signal::derive(move || input.get()),
                 source_format,
                 move |path: String| {
                     // Pendant un rendu, la source ne change pas.
                     if phase.get_untracked() != Phase::Rendering && input.get_untracked().trim().trim_matches('"') != path {
                         set_input(path);
+                    }
+                },
+                move |html: String, track: String| {
+                    // Nouvelle bande son de l'animation courante : l'export la reprend.
+                    if source_path() == html && phase.get_untracked() != Phase::Rendering {
+                        audio_auto.set(true);
+                        audio.set(track);
+                        refresh_files();
                     }
                 },
                 move || tab.set(Tab::Convert),
@@ -785,13 +830,18 @@ pub fn App() -> impl IntoView {
                             <span>{move || t().transparent}<small>{move || t().transparent_hint}</small></span>
                         </label>
                         <div class="field">
-                            <label class="lbl">{move || t().audio_label}</label>
+                            <label class="lbl">
+                                {move || t().audio_label}
+                                <Show when=move || audio_auto.get() && !audio.get().is_empty()>
+                                    <span class="lbl-tag">{move || t().audio_companion}</span>
+                                </Show>
+                            </label>
                             <div class="row">
                                 <input class="grow" type="text" placeholder=move || t().audio_none prop:value=move || audio.get()
-                                    on:change=move |ev| audio.set(event_target_value(&ev)) />
+                                    on:change=move |ev| { audio_auto.set(false); audio.set(event_target_value(&ev)); } />
                                 <button class="btn" on:click=move |_| pick("audio", audio, false)>{move || t().btn_choose}</button>
                                 <Show when=move || !audio.get().is_empty()>
-                                    <button class="btn ghost" on:click=move |_| audio.set(String::new())>"✕"</button>
+                                    <button class="btn ghost" on:click=move |_| { audio_auto.set(false); audio.set(String::new()); }>"✕"</button>
                                 </Show>
                             </div>
                         </div>

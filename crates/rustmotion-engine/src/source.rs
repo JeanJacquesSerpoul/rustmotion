@@ -86,9 +86,15 @@ pub fn locate(input: &str) -> Result<Option<LocalPage>> {
         expected_script: Some(expected.clone()),
         script_found,
         script_linked,
+        audio: companion_audio(&root, &stem).map(|p| p.display().to_string()),
     };
     let inject_script = files.script_injected().then_some(expected);
     Ok(Some(LocalPage { root, file, suffix, inject_script, files }))
+}
+
+/// Bande son compagnon d'une page : même nom, extension audio (`page.html` → `page.mp3`).
+pub fn companion_audio(dir: &Path, stem: &str) -> Option<PathBuf> {
+    rustmotion_types::AUDIO_EXTS.iter().map(|e| dir.join(format!("{stem}.{e}"))).find(|p| p.is_file())
 }
 
 /// Fichiers de la source, sans lancer de navigateur (pour l'affichage immédiat).

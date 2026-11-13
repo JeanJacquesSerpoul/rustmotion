@@ -17,6 +17,9 @@ The app has two tabs:
    through the [OpenRouter proxy](server/readme_openrouter.md). The AI writes an HTML animation at the chosen format and
    duration, previewed right away. You can ask for adjustments (every version is kept and saved in `Videos/RustMotion`),
    then send it to the conversion tab in one click.
+   A **soundtrack** can go with it: an imported audio file, or music composed by the AI
+   (Google Lyria 3: $0.04 up to 30 s, $0.08 beyond), when the animation is created or later.
+   It plays with the preview and is picked up automatically for the export.
 2. **Video conversion**: turns any HTML animation into a video (details below).
 
 The proxy is expected at `http://127.0.0.1:9018/v1` by default; the URL, the proxy key (`PROXY_API_KEYS`) and the model
@@ -152,6 +155,10 @@ RustMotion takes both by default:
 - the app shows the page and its script with the same name;
 - if the page does not load that script itself, it is **added automatically** at the end of the page;
 - if it is missing, a **warning** says so: the HTML page must then contain the whole animation.
+
+Likewise, `coulisses.mp3` (or `.wav`, `.m4a`, `.aac`, `.ogg`, `.flac`, `.opus`) is its **soundtrack**:
+it becomes the export's audio track unless another track is picked by hand. A soundtrack added from the app
+is copied under that name; the one it replaces is renamed, never deleted.
 
 The page is checked before exporting; the export is **refused** when:
 

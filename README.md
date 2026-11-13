@@ -17,6 +17,9 @@ L'application a deux onglets :
    via le [proxy OpenRouter](server/readme_openrouter.md). L'IA écrit une animation HTML au format et à la durée choisis,
    prévisualisée aussitôt. On peut demander des ajustements (chaque version est conservée et enregistrée dans
    `Vidéos/RustMotion`), puis l'envoyer d'un clic à l'onglet de conversion.
+   Une **bande son** peut l'accompagner : un fichier audio importé, ou une musique composée par l'IA
+   (Google Lyria 3 : 0,04 $ jusqu'à 30 s, 0,08 $ au-delà), à la création de l'animation ou plus tard.
+   Elle est jouée avec l'aperçu et reprise automatiquement à l'export.
 2. **Conversion vidéo** : transforme n'importe quelle animation HTML en vidéo (détails ci-dessous).
 
 Le proxy est attendu par défaut sur `http://127.0.0.1:9018/v1` ; l'URL, la clé du proxy (`PROXY_API_KEYS`) et le modèle
@@ -153,6 +156,10 @@ RustMotion prend les deux par défaut :
 - l'application affiche la page et son script de même nom ;
 - si la page ne charge pas ce script elle-même, il est **ajouté automatiquement** en fin de page ;
 - s'il est absent, une **alerte** l'indique : la page HTML doit alors contenir toute l'animation.
+
+De la même façon, `coulisses.mp3` (ou `.wav`, `.m4a`, `.aac`, `.ogg`, `.flac`, `.opus`) est sa **bande son** :
+elle devient la piste audio de l'export, sauf si une autre piste est choisie à la main. Une bande son ajoutée
+depuis l'application est copiée sous ce nom ; celle qu'elle remplace est renommée, jamais supprimée.
 
 Avant l'export, la page est contrôlée ; l'export est **refusé** si :
 

@@ -113,8 +113,14 @@ pub fn ffmpeg_args(s: &RenderSettings, output: &Path) -> Vec<String> {
             _ => push(&["-c:a", "aac", "-b:a", "192k"]),
         }
         // Pas de -shortest (il perd la dernière image) : l'audio est complété par du silence,
-        // puis -t coupe vidéo et audio à la durée exacte.
-        push(&["-af", "apad"]);
+        // puis -t coupe vidéo et audio à la durée exacte. Un bref fondu évite une coupure sèche
+        // quand la piste est plus longue que la vidéo (sans effet si elle s'est déjà tue).
+        let fade = (s.duration / 10.0).clamp(0.0, 0.8);
+        if fade >= 0.1 {
+            push(&["-af", &format!("apad,afade=t=out:st={:.3}:d={fade:.3}", s.duration - fade)]);
+        } else {
+            push(&["-af", "apad"]);
+        }
     }
     push(&["-r", &fps, "-t", &format!("{:.3}", s.duration)]);
     a.push(output.to_string_lossy().to_string());
